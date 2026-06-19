@@ -48,14 +48,12 @@ Phase A shipped. New EV mode `Scheduled` + up to four `(HA schedule helper → E
 
 ---
 
-## 5. Solar AI sometimes fails to start with HA — suspect OCPP
+## ~~5. Solar AI sometimes fails to start with HA — suspect OCPP~~ (resolved 2026-06-19 in v0.60.0)
 
-After rebooting HA today, anything OCPP (the charger) wasn't working at first; it started working a few hours later on its own. Solar AI also sometimes fails to start with HA, and the suspicion is that OCPP startup ordering / dependency is the cause.
+**Root cause:** The embedded OCPP server was started AFTER `async_config_entry_first_refresh()` in `async_setup_entry`. This meant that during the first refresh, `coordinator.ocpp_server` was `None`, causing the coordinator to fall back to reading HA entities for OCPP data. If the OCPP integration wasn't ready yet (e.g., during HA startup), these entities wouldn't exist, potentially causing startup issues.
 
-Investigate:
-- Solar AI's dependency on the OCPP integration at startup.
-- Whether Solar AI is failing because OCPP entities don't exist yet, or because OCPP itself is in a retry loop.
-- Whether a `wait_for_state` / retry / deferred-setup pattern would fix it.
-- HA logs from the most recent reboot to confirm the root cause before changing anything.
+**Fix:** Moved the OCPP server startup block to execute BEFORE `async_config_entry_first_refresh()`. Now when `_async_update_data()` runs during the first refresh, the OCPP server is already available, and the coordinator can access it directly instead of falling back to HA entities that may not exist yet.
 
-Do not push a fix until the root cause is confirmed.
+This ensures proper startup ordering: storage load → OCPP server start → first refresh → platform setup.
+
+---
