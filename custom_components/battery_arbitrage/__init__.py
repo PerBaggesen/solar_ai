@@ -316,16 +316,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Battery Arbitrage from a config entry."""
     coordinator = BatteryArbitrageCoordinator(hass, dict(entry.data))
     await coordinator.async_load_storage()
-    await coordinator.async_config_entry_first_refresh()
-
-    # Disable the legacy export-limit automation so it can't fight us over register 46616
-    await coordinator.async_disable_legacy_automation()
-
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
-
-    # Start the embedded OCPP server BEFORE forwarding to platforms so the
-    # sensor entities can immediately read from `coordinator.ocpp_server`.
-    # (v0.27.0). Skipped cleanly if user opted out via embedded=False.
+    # Start the embedded OCPP server BEFORE the first refresh so that
+    # _async_update_data() can access it immediately. This fixes startup
+    # ordering issues where OCPP entities might not be available during the
+    # first refresh (v0.60.0).
     # Read via _setting so the Advanced-pane switch (stored override) decides
     # whether the server starts; storage is already loaded by this point.
     if coordinator._setting(CONF_OCPP_EMBEDDED, DEFAULT_OCPP_EMBEDDED):
@@ -357,6 +351,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.info(
             "Embedded OCPP server disabled in config (using legacy lbbrhzn/ocpp)",
         )
+
+    await coordinator.async_config_entry_first_refresh()
+
+    # Disable the legacy export-limit automation so it can't fight us over register 46616
+    await coordinator.async_disable_legacy_automation()
+
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
