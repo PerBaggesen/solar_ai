@@ -1006,6 +1006,8 @@ async def async_setup_entry(
     # Diagnostic: the running Solar AI integration version, shown in the
     # Settings pane. Reads coordinator.sw_version (set from manifest.json).
     entities.append(BatteryArbitrageVersionSensor(coordinator, entry))
+    # v1.20.0 — inverter backend diagnostics + last hardware command.
+    entities.append(BatteryArbitrageInverterControlSensor(coordinator, entry))
 
     async_add_entities(entities)
 
@@ -1047,6 +1049,48 @@ class BatteryArbitrageSensor(CoordinatorEntity[BatteryArbitrageCoordinator], Sen
         if fn is None or self.coordinator.data is None:
             return None
         return fn(self.coordinator.data)
+
+
+class BatteryArbitrageInverterControlSensor(
+    CoordinatorEntity[BatteryArbitrageCoordinator], SensorEntity
+):
+    """v1.20.0 — what Solar AI last commanded, and the backend's state.
+
+    State: outcome of the last write (sent / dry_run / blocked / failed) or
+    "idle". Attributes: the command itself, recent history, the backend's
+    capabilities, verification status and blocked reason — the place to
+    watch while commissioning in dry run.
+    """
+
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:console-line"
+    _attr_translation_key = "inverter_control"
+
+    def __init__(
+        self,
+        coordinator: BatteryArbitrageCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_inverter_control"
+        self._attr_device_info = _device_info(entry)
+
+    @property
+    def native_value(self) -> str:
+        last = self.coordinator.actuator.last_command
+        return last.outcome if last else "idle"
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        actuator = self.coordinator.actuator
+        last = actuator.last_command
+        return {
+            "dry_run": actuator.dry_run,
+            "last_command": last.as_dict() if last else None,
+            "history": [rec.as_dict() for rec in list(actuator.history)[-10:]],
+            **self.coordinator.inverter.diagnostics(),
+        }
 
 
 class BatteryArbitrageVersionSensor(

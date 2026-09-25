@@ -10,12 +10,16 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import aiohttp
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Context, HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
+from .actuation import Actuator
+from .inverters import build_backend
+from .units import energy_to_kwh, power_to_kw
 from .const import (
+    CONF_DRY_RUN,
     CALIBRATION_MAX_SAMPLES,
     CALIBRATION_MAX_SOC,
     CALIBRATION_MIN_CHARGE_KW,
@@ -69,14 +73,7 @@ from .const import (
     FOXESS_CELL_TEMP_LOW,
     FOXESS_FEED_IN,
     FOXESS_FORCE_CHARGE_ENTITY,
-    FOXESS_FORCE_DISCHARGE_ENTITY,
-    FOXESS_MIN_SOC_ON_GRID_ENTITY,
-    CONF_FOXESS_MIN_SOC_ENTITY,
-    FOXESS_MAX_DISCHARGE_ENTITY,
-    CONF_FOXESS_MAX_DISCHARGE_ENTITY,
     FOXESS_LOAD_POWER,
-    FOXESS_WORK_MODE_ENTITY,
-    FOXESS_EXPORT_LIMIT_REGISTER,
     LEGACY_EXPORT_AUTOMATION,
     LOAD_HISTORY_MAX_SAMPLES,
     MIN_EXPORTABLE_KWH,
@@ -139,7 +136,6 @@ from .const import (
     VACATION_SHORT_WINDOW,
     VACATION_THRESHOLD,
     WORK_MODE_EXPORT,
-    WORK_MODE_FORCE_DISCHARGE,
     WORK_MODE_FORCE_CHARGE,
     WORK_MODE_SELF_USE,
     EVCC_BATTERY_CHARGE,
@@ -319,6 +315,25 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
         self.sw_version: str = "0.0.0"
         self._store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         self._stored: dict[str, Any] = {}
+
+        # v1.20.0 — every hardware write goes through the Actuator (dry run,
+        # blocked writes, own-context tracking); the inverter backend turns the
+        # operating modes into writes for FoxESS or solax_modbus.
+        async def _call_service(domain: str, service: str, data: dict, context) -> Any:
+            return await hass.services.async_call(
+                domain, service, data, blocking=True, context=context)
+
+        self.actuator = Actuator(
+            _call_service,
+            context_factory=Context,
+            dry_run=lambda: bool(self._setting(CONF_DRY_RUN, False)),
+        )
+        self.inverter = build_backend(
+            hass, config, self.actuator,
+            store=lambda: self._stored,
+            save=lambda: self.hass.async_create_task(self._store.async_save(self._stored)),
+        )
+        self._inverter_setup_done = False
         # v0.49.0 — disk-space alarm: latest reading + latched alarm state
         self._disk_usage: dict[str, Any] = {}
         self._disk_low: bool = False
@@ -1193,6 +1208,16 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
         now = datetime.now(timezone.utc)
         forecast_hours = self.config.get("forecast_hours", 24)
 
+        # v1.20.0 — one-off inverter backend checks (repair issues). Run on the
+        # first tick rather than at construction so the inverter integration's
+        # entities are loaded.
+        if not self._inverter_setup_done:
+            self._inverter_setup_done = True
+            try:
+                await self.inverter.async_setup()
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning("Inverter backend setup checks failed: %s", err)
+
         # ── Fast: fetch live state every tick (dispatches on configured source) ──
         # Returns a dict in EVCC /api/state shape: homePower, pvPower, gridPower,
         # loadpoints (list), batteryMode. See _fetch_live_state() for the per-source
@@ -1614,7 +1639,7 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
                 mppt_curtailed = self._pv_power_limited_flag
                 batt_soc_now = self._get_float_state(
                     self.config.get(CONF_BATTERY_SOC_ENTITY, FOXESS_BATTERY_SOC), 0)
-                batt_discharge_now = self._get_float_state(
+                batt_discharge_now = self._get_power_kw(
                     self.config.get(CONF_BATTERY_DISCHARGE_ENTITY,
                                     FOXESS_BATTERY_DISCHARGE_POWER), 0)
                 grid_export_kw = max(0.0, -grid_power_w / 1000.0)
@@ -1729,10 +1754,13 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
         # ---- FoxESS state ----
         battery_soc = self._get_float_state(self.config.get(CONF_BATTERY_SOC_ENTITY, FOXESS_BATTERY_SOC), 0)
         cell_temp_low = self._get_float_state(self.config.get(CONF_CELL_TEMP_ENTITY, FOXESS_CELL_TEMP_LOW))
-        battery_charge_kw = self._get_float_state(self.config.get(CONF_BATTERY_CHARGE_ENTITY, FOXESS_BATTERY_CHARGE_POWER), 0)
-        battery_discharge_kw = self._get_float_state(self.config.get(CONF_BATTERY_DISCHARGE_ENTITY, FOXESS_BATTERY_DISCHARGE_POWER), 0)
-        current_work_mode = self.hass.states.get(FOXESS_WORK_MODE_ENTITY)
-        work_mode_str = current_work_mode.state if current_work_mode else WORK_MODE_SELF_USE
+        battery_charge_kw = self._get_power_kw(self.config.get(CONF_BATTERY_CHARGE_ENTITY, FOXESS_BATTERY_CHARGE_POWER), 0)
+        battery_discharge_kw = self._get_power_kw(self.config.get(CONF_BATTERY_DISCHARGE_ENTITY, FOXESS_BATTERY_DISCHARGE_POWER), 0)
+        # v1.20.0 — the charge-rate learner only needs to know whether the
+        # inverter is force-charging; ask the backend instead of reading the
+        # FoxESS work-mode select directly.
+        work_mode_str = (WORK_MODE_FORCE_CHARGE if self.inverter.is_force_charging()
+                         else WORK_MODE_SELF_USE)
         # v0.61.0 — a 0 / unavailable SoC read (common for the first ticks after a
         # restart, before FoxESS repopulates; `battery_soc` defaults to 0) must not
         # drive control. The battery never legitimately sits at 0 % (it floors well
@@ -1913,7 +1941,7 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
             # seasons) where Force Charge never runs.
             self._learn_capacity_discharge(
                 battery_soc,
-                self._get_float_state(self.config.get(
+                self._get_energy_kwh(self.config.get(
                     CONF_BATTERY_DISCHARGE_TOTAL_ENTITY,
                     FOXESS_BATTERY_DISCHARGE_TOTAL)),
                 battery_charge_kw,
@@ -2771,11 +2799,15 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
         # launch a curtailment probe. A failed read leaves the prior value
         # in place (sticky), which is the safe default — a transient modbus
         # blip should not toggle the probe state.
-        flag = await self._read_pv_power_limited_flag(
-            self.config.get("foxess_inverter_id", "")
-        )
+        flag = await self.inverter.async_read_pv_limited()
         if flag is not None:
             self._pv_power_limited_flag = flag
+        # v1.20.0 — backend upkeep: keep timed remote-control modes alive,
+        # verify our writes stuck, refresh repair issues.
+        try:
+            await self.inverter.async_tick(datetime.now(timezone.utc))
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Inverter backend tick failed: %s", err)
 
         # ---- v0.39.0 Auto-Full on negative buy price ----
         # When the opt-in switch is on and buy_price ≤ 0 for ≥
@@ -3151,7 +3183,6 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
         """Handle transition between operating modes."""
         _LOGGER.info("Battery Arbitrage: transitioning %s → %s", self._current_mode, new_mode)
 
-        inverter_id = self.config.get("foxess_inverter_id", "")
         session = async_get_clientsession(self.hass)
         evcc_url = self.config.get("evcc_url", "")
         # Only coordinate battery mode with EVCC when EVCC is the live-state source
@@ -3172,12 +3203,11 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
             # v0.47.6 — Force Discharge actively pushes the battery to the grid.
             # (The old "Feed-in First" only re-routes solar surplus and does not
             # discharge the battery at night, so arbitrage export never fired.)
-            await self._set_work_mode(WORK_MODE_FORCE_DISCHARGE)
             # Set the discharge power: user export cap if configured, else 0 →
             # full rate (the entity's max). Always set it now that we Force
             # Discharge, so the inverter actually exports.
             max_export_kw = float(self._stored.get("max_export_kw", DEFAULT_MAX_EXPORT_KW))
-            await self._set_discharge_power(max_export_kw)
+            await self.inverter.async_force_discharge(max_export_kw)
             # v0.65.0 — HARDWARE floor backstop: raise the on-grid Min-SoC to the
             # export floor so Force Discharge physically stops at the floor even
             # if a Solar AI tick stalls. Restored the moment we leave EXPORTING.
@@ -3190,15 +3220,13 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
         elif new_mode == MODE_GRID_CHARGING:
             # Force Charge: inverter charges battery from grid at grid-headroom-capped rate
             await self._restore_export_min_soc()  # leaving export — give the house its SoC back
-            await self._set_work_mode(WORK_MODE_FORCE_CHARGE)
-            await self._set_charge_power(inverter_id, max_kw=capped_charge_rate_kw)
+            await self.inverter.async_force_charge(
+                self._grid_charge_rate_kw(capped_charge_rate_kw))
             # v1.16.0 — the discharge lock also blocks Force Charge. Release it
-            # only after the inverter reports Force Charge (_set_work_mode logs
-            # and swallows write failures), so the battery is never unlocked
+            # only after the inverter reports Force Charge (mode writes log
+            # and swallow failures), so the battery is never unlocked
             # in Self Use.
-            wm = self.hass.states.get(
-                self.config.get("foxess_work_mode_entity", "select.foxessmodbus_work_mode"))
-            if wm is not None and wm.state == WORK_MODE_FORCE_CHARGE:
+            if self.inverter.is_force_charging():
                 self._force_charge_active = True
                 if self._ev_battery_locked:
                     await self._set_battery_lock(False)
@@ -3208,7 +3236,7 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
 
         elif new_mode == MODE_NORMAL:
             await self._restore_export_min_soc()  # leaving export — give the house its SoC back
-            await self._set_work_mode(WORK_MODE_SELF_USE)
+            await self.inverter.async_self_use()
             # Release EVCC back to normal only if WE were the one who set it to hold
             if coordinate_with_evcc and self._we_set_evcc_mode:
                 self._we_set_evcc_mode = False
@@ -3288,8 +3316,8 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
         if limit_w == prev_limit:
             return  # no change — skip the write
 
-        inverter_id = self.config.get("foxess_inverter_id", "")
-        await self._set_export_limit(inverter_id, limit_w)
+        if self.inverter.capabilities().export_limit:
+            await self.inverter.async_set_export_limit(limit_w)
         self._last_export_limit = limit_w
 
         # ── Solar floor notifications (intentionally narrower) ───────────
@@ -3320,72 +3348,6 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
                     ),
                 )
 
-    async def _set_work_mode(self, mode: str) -> None:
-        entity = self.config.get("foxess_work_mode_entity", "select.foxessmodbus_work_mode")
-        try:
-            await self.hass.services.async_call(
-                "select", "select_option",
-                {"entity_id": entity, "option": mode},
-                blocking=True,
-            )
-            _LOGGER.debug("Battery Arbitrage: set work mode → %s", mode)
-        except Exception as err:
-            _LOGGER.error("Failed to set FoxESS work mode to %s: %s", mode, err)
-
-    async def _read_pv_power_limited_flag(self, inverter_id: str) -> bool | None:
-        """Read the FoxESS "PV Power Limited" holding register (49251).
-
-        Returns True when the inverter reports it is actively curtailing PV
-        (MPPT throttled), False when the inverter is delivering all
-        available PV, or None if the read fails. Used by the EV controller
-        as the curtailment trigger (v0.36.2 — replaces the v0.30.1
-        forecast-substitution heuristic).
-        """
-        if not inverter_id:
-            return None
-        try:
-            from .const import FOXESS_PV_POWER_LIMITED_FLAG_REGISTER  # noqa: PLC0415
-            resp = await self.hass.services.async_call(
-                "foxess_modbus", "read_registers",
-                {
-                    "inverter": inverter_id,
-                    "start_address": FOXESS_PV_POWER_LIMITED_FLAG_REGISTER,
-                    "count": 1,
-                    "type": "holding",
-                },
-                blocking=True,
-                return_response=True,
-            )
-            values = ((resp or {}).get("values")
-                      or (resp or {}).get("response", {}).get("values")
-                      or {})
-            raw = values.get(FOXESS_PV_POWER_LIMITED_FLAG_REGISTER)
-            if raw is None:
-                # Some service responses key by stringified address
-                raw = values.get(str(FOXESS_PV_POWER_LIMITED_FLAG_REGISTER))
-            return bool(int(raw)) if raw is not None else None
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.debug("Read PV-limited flag (reg 49251) failed: %s", err)
-            return None
-
-    async def _set_export_limit(self, inverter_id: str, limit_watts: int) -> None:
-        """Write the FoxESS export limit register (46616)."""
-        try:
-            high = limit_watts // 65536
-            low = limit_watts % 65536
-            await self.hass.services.async_call(
-                "foxess_modbus", "write_registers",
-                {
-                    "inverter": inverter_id,
-                    "start_address": FOXESS_EXPORT_LIMIT_REGISTER,
-                    "values": f"{high}, {low}",
-                },
-                blocking=True,
-            )
-            _LOGGER.debug("Battery Arbitrage: export limit → %dW", limit_watts)
-        except Exception as err:
-            _LOGGER.error("Failed to set export limit: %s", err)
-
     async def _maintain_charge_power(
         self, capped_charge_rate_kw: float, current_mode: str,
     ) -> None:
@@ -3403,11 +3365,13 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
         if prev is not None and abs(capped_charge_rate_kw - prev) < CHARGE_RECAP_DEADBAND_KW:
             return
         self._last_charge_cap_kw = capped_charge_rate_kw
-        await self._set_charge_power(
-            self.config.get("foxess_inverter_id", ""), max_kw=capped_charge_rate_kw)
+        rate_kw = self._grid_charge_rate_kw(capped_charge_rate_kw)
+        if rate_kw is not None:
+            await self.inverter.async_set_charge_power(rate_kw)
 
-    async def _set_charge_power(self, inverter_id: str, max_kw: float = 0.0) -> None:
-        """Set the Force Charge power to the learned rate, capped to grid headroom."""
+    def _grid_charge_rate_kw(self, max_kw: float = 0.0) -> float | None:
+        """Force Charge power: the learned rate, capped to grid headroom.
+        None when below the useful minimum (the power write is skipped)."""
         rate_kw = self.get_current_charge_rate()
         if rate_kw <= 0:
             rate_kw = 1.0   # fallback if not yet calibrated
@@ -3415,24 +3379,8 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
             rate_kw = min(rate_kw, max_kw)
         if rate_kw < GRID_MIN_CHARGE_KW:
             _LOGGER.warning("Battery Arbitrage: charge rate %.2f kW below minimum — skipping", rate_kw)
-            return
-        entity = self.config.get("foxess_force_charge_entity", "number.foxessmodbus_force_charge_power")
-        # v0.47.6 — the FoxESS force-charge-power entity is in kW (not W). The
-        # previous `int(rate_kw * 1000)` wrote watts into a 0–10 kW field, so the
-        # set silently failed (out of range) and the power stayed at its max,
-        # ignoring the grid-headroom cap. Write kW, clamped to the entity range.
-        st = self.hass.states.get(entity)
-        ent_max = float(st.attributes.get("max", 10.0)) if st else 10.0
-        value = round(max(0.0, min(rate_kw, ent_max)), 3)
-        try:
-            await self.hass.services.async_call(
-                "number", "set_value",
-                {"entity_id": entity, "value": value},
-                blocking=True,
-            )
-            _LOGGER.debug("Battery Arbitrage: force charge power → %.3f kW", value)
-        except Exception as err:
-            _LOGGER.error("Failed to set force charge power: %s", err)
+            return None
+        return rate_kw
 
     async def _apply_export_floor_min_soc(self, floor_soc: float) -> None:
         """v0.65.0 — raise the FoxESS on-grid Min-SoC to the export floor while
@@ -3440,8 +3388,8 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
         even if a Solar AI tick stalls. The user's original value is saved (in
         storage, so it survives a restart) and restored when export ends — the
         floor must never block overnight HOUSE self-use, only the sell."""
-        entity = self.config.get(CONF_FOXESS_MIN_SOC_ENTITY, FOXESS_MIN_SOC_ON_GRID_ENTITY)
-        st = self.hass.states.get(entity)
+        entity = self.inverter.min_soc_entity()
+        st = self.hass.states.get(entity) if entity else None
         if st is None or st.state in ("unknown", "unavailable"):
             return  # entity not present (e.g. non-Modbus install) — soft floor only
         try:
@@ -3455,8 +3403,7 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
         if self._stored.get("export_min_soc_prev") is None:
             self._stored["export_min_soc_prev"] = current
         try:
-            await self.hass.services.async_call(
-                "number", "set_value", {"entity_id": entity, "value": target}, blocking=True)
+            await self.inverter.async_set_number(entity, target)
             _LOGGER.info("Export floor backstop: on-grid Min-SoC %.0f%% → %.0f%%", current, target)
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Could not raise on-grid Min-SoC for export floor: %s", err)
@@ -3468,37 +3415,15 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
         prev = self._stored.get("export_min_soc_prev")
         if prev is None:
             return
-        entity = self.config.get(CONF_FOXESS_MIN_SOC_ENTITY, FOXESS_MIN_SOC_ON_GRID_ENTITY)
+        entity = self.inverter.min_soc_entity()
+        if not entity:
+            return
         try:
-            await self.hass.services.async_call(
-                "number", "set_value",
-                {"entity_id": entity, "value": float(prev)}, blocking=True)
+            await self.inverter.async_set_number(entity, float(prev))
             _LOGGER.info("Export floor backstop: on-grid Min-SoC restored to %.0f%%", float(prev))
             self._stored.pop("export_min_soc_prev", None)
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Could not restore on-grid Min-SoC after export: %s", err)
-
-    async def _set_discharge_power(self, max_kw: float) -> None:
-        """Set the Force Discharge power (kW). `max_kw <= 0` → full rate (the
-        entity's max).
-
-        v0.47.6 — the FoxESS force-discharge-power entity is in kW (not W); the
-        previous `int(max_kw * 1000)` wrote watts into a 0–10 kW field and the
-        set silently failed. Write kW, clamped to the entity range.
-        """
-        entity = self.config.get("foxess_force_discharge_entity", FOXESS_FORCE_DISCHARGE_ENTITY)
-        st = self.hass.states.get(entity)
-        ent_max = float(st.attributes.get("max", 10.0)) if st else 10.0
-        value = round(ent_max if max_kw <= 0 else max(0.0, min(float(max_kw), ent_max)), 3)
-        try:
-            await self.hass.services.async_call(
-                "number", "set_value",
-                {"entity_id": entity, "value": value},
-                blocking=True,
-            )
-            _LOGGER.debug("Battery Arbitrage: force discharge power → %.3f kW", value)
-        except Exception as err:
-            _LOGGER.error("Failed to set force discharge power: %s", err)
 
     async def _send_mode_notification(
         self, old_mode: str, new_mode: str, reason: str
@@ -4225,8 +4150,8 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
         are hardware-accurate and available immediately on any existing install.
         Returns None if there isn't enough lifetime data yet.
         """
-        charge_total = self._get_float_state(self.config.get(CONF_BATTERY_CHARGE_TOTAL_ENTITY, FOXESS_BATTERY_CHARGE_TOTAL))
-        discharge_total = self._get_float_state(self.config.get(CONF_BATTERY_DISCHARGE_TOTAL_ENTITY, FOXESS_BATTERY_DISCHARGE_TOTAL))
+        charge_total = self._get_energy_kwh(self.config.get(CONF_BATTERY_CHARGE_TOTAL_ENTITY, FOXESS_BATTERY_CHARGE_TOTAL))
+        discharge_total = self._get_energy_kwh(self.config.get(CONF_BATTERY_DISCHARGE_TOTAL_ENTITY, FOXESS_BATTERY_DISCHARGE_TOTAL))
         if (
             charge_total is None
             or discharge_total is None
@@ -4275,7 +4200,7 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
         # Kept as a running total (for the TOTAL_INCREASING sensor / HA
         # statistics / Energy dashboard) plus a daily log (for period totals).
         from .const import CONF_FOXESS_GRID_EXPORT_ENTITY, FOXESS_FEED_IN  # noqa: PLC0415
-        feed_in_kw = self._get_float_state(
+        feed_in_kw = self._get_power_kw(
             self.config.get(CONF_FOXESS_GRID_EXPORT_ENTITY, FOXESS_FEED_IN), 0.0,
         ) or 0.0
         if feed_in_kw > 0 and export_price > 0:
@@ -5206,14 +5131,14 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
             CONF_BATTERY_CHARGE_ENTITY, FOXESS_BATTERY_CHARGE_POWER,
             CONF_BATTERY_DISCHARGE_ENTITY, FOXESS_BATTERY_DISCHARGE_POWER,
         )
-        battery_charge_kw = max(0.0, float(self._get_float_state(
+        battery_charge_kw = max(0.0, float(self._get_power_kw(
             self.config.get(CONF_BATTERY_CHARGE_ENTITY, FOXESS_BATTERY_CHARGE_POWER),
             0.0,
         ) or 0.0))
         # Charge and discharge are reported on separate sensors (the charge
         # sensor sits at 0 while the battery discharges), so read discharge from
         # its own sensor — not as the negative of charge.
-        battery_discharge_kw = max(0.0, float(self._get_float_state(
+        battery_discharge_kw = max(0.0, float(self._get_power_kw(
             self.config.get(CONF_BATTERY_DISCHARGE_ENTITY, FOXESS_BATTERY_DISCHARGE_POWER),
             0.0,
         ) or 0.0))
@@ -5735,10 +5660,10 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
         self._ev_modbus_last_power_w = ev_current_kw * 1000.0
         house_load_kw  = home_power_w / 1000.0
         solar_kw       = pv_power_w / 1000.0
-        battery_charge_kw = max(0.0, float(self._get_float_state(
+        battery_charge_kw = max(0.0, float(self._get_power_kw(
             self.config.get(CONF_BATTERY_CHARGE_ENTITY, FOXESS_BATTERY_CHARGE_POWER), 0.0,
         ) or 0.0))
-        battery_discharge_kw = max(0.0, float(self._get_float_state(
+        battery_discharge_kw = max(0.0, float(self._get_power_kw(
             self.config.get(CONF_BATTERY_DISCHARGE_ENTITY, FOXESS_BATTERY_DISCHARGE_POWER), 0.0,
         ) or 0.0))
         priority_soc = float(self._stored.get(
@@ -6490,8 +6415,8 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
                 return max(0.0, min(100.0, float(prev)))
             except (TypeError, ValueError):
                 pass
-        entity = self.config.get(CONF_FOXESS_MIN_SOC_ENTITY, FOXESS_MIN_SOC_ON_GRID_ENTITY)
-        hw_floor = self._get_float_state(entity)
+        entity = self.inverter.min_soc_entity()
+        hw_floor = self._get_float_state(entity) if entity else None
         if hw_floor is None:
             return float(DEFAULT_PHYSICAL_FLOOR_SOC)
         return max(0.0, min(100.0, float(hw_floor)))
@@ -6512,8 +6437,8 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
         ever lower the limit, never raise it beyond what arbitrage already
         allows.
         """
-        entity = self.config.get(CONF_FOXESS_MIN_SOC_ENTITY, FOXESS_MIN_SOC_ON_GRID_ENTITY)
-        hw_floor = self._get_float_state(entity)
+        entity = self.inverter.min_soc_entity()
+        hw_floor = self._get_float_state(entity) if entity else None
         if hw_floor is None:
             return float(arbitrage_floor_soc)
         return min(float(arbitrage_floor_soc), max(0.0, hw_floor))
@@ -6925,9 +6850,9 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
         if locked == self._ev_battery_locked:
             return
 
-        max_discharge_entity = self.config.get(
-            CONF_FOXESS_MAX_DISCHARGE_ENTITY, FOXESS_MAX_DISCHARGE_ENTITY,
-        )
+        # v1.20.0 — the lock entity comes from the inverter backend (FoxESS:
+        # max discharge current in A; Growatt: EMS discharging rate in %).
+        max_discharge_entity = self.inverter.discharge_lock_entity() or ""
 
         # ─── ENGAGE LOCK ──────────────────────────────────────────────
         if locked:
@@ -6935,7 +6860,7 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
             mechanisms_failed = []
 
             # Mechanism 1: max_discharge_current → 0
-            entity_state = self.hass.states.get(max_discharge_entity)
+            entity_state = self.hass.states.get(max_discharge_entity) if max_discharge_entity else None
             if entity_state is None:
                 _LOGGER.error(
                     "Battery lock: entity %s not found — cannot apply "
@@ -6945,14 +6870,12 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
                 mechanisms_failed.append("max_discharge_current (entity missing)")
             else:
                 try:
-                    prev = float(entity_state.state) if entity_state.state not in (None, "unknown", "unavailable") else 50.0
+                    prev = (float(entity_state.state)
+                            if entity_state.state not in (None, "unknown", "unavailable")
+                            else self.inverter.discharge_lock_restore_default)
                     if prev > 0:
                         self._ev_battery_lock_prev_a = prev
-                    await self.hass.services.async_call(
-                        "number", "set_value",
-                        {"entity_id": max_discharge_entity, "value": 0},
-                        blocking=True,
-                    )
+                    await self.inverter.async_set_number(max_discharge_entity, 0)
                     mechanisms_ok.append(
                         f"max_discharge_current 0 A (was {self._ev_battery_lock_prev_a})"
                     )
@@ -6994,15 +6917,11 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
             mechanisms_ok = []
             mechanisms_failed = []
 
-            restore_a = self._ev_battery_lock_prev_a or 50.0
-            entity_state = self.hass.states.get(max_discharge_entity)
+            restore_a = self._ev_battery_lock_prev_a or self.inverter.discharge_lock_restore_default
+            entity_state = self.hass.states.get(max_discharge_entity) if max_discharge_entity else None
             if entity_state is not None:
                 try:
-                    await self.hass.services.async_call(
-                        "number", "set_value",
-                        {"entity_id": max_discharge_entity, "value": restore_a},
-                        blocking=True,
-                    )
+                    await self.inverter.async_set_number(max_discharge_entity, restore_a)
                     mechanisms_ok.append(f"max_discharge_current → {restore_a:.1f} A")
                 except Exception as err:  # noqa: BLE001
                     mechanisms_failed.append(f"max_discharge_current ({err})")
@@ -8509,16 +8428,16 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
             gridPower = grid_consumption − feed_in   (positive = import)
         Returned values are in watts to match the EVCC API.
         """
-        grid_in_kw  = self._get_float_state(
+        grid_in_kw  = self._get_power_kw(
             self.config.get(CONF_FOXESS_GRID_IMPORT_ENTITY, DEFAULT_FOXESS_GRID_IMPORT), 0.0,
         )
-        grid_out_kw = self._get_float_state(
+        grid_out_kw = self._get_power_kw(
             self.config.get(CONF_FOXESS_GRID_EXPORT_ENTITY, DEFAULT_FOXESS_GRID_EXPORT), 0.0,
         )
-        pv_kw       = self._get_float_state(
+        pv_kw       = self._get_power_kw(
             self.config.get(CONF_FOXESS_PV_POWER_ENTITY, DEFAULT_FOXESS_PV_POWER), 0.0,
         )
-        load_kw     = self._get_float_state(
+        load_kw     = self._get_power_kw(
             self.config.get(CONF_FOXESS_LOAD_POWER_ENTITY, DEFAULT_FOXESS_LOAD_POWER), 0.0,
         )
         # Sensors may be unavailable on first tick — _get_float_state returns 0.0
@@ -9504,6 +9423,27 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
         except ValueError:
             return default
 
+    def _get_power_kw(self, entity_id: str, default: float | None = None) -> float | None:
+        """Power reading in kW, converted from the entity's unit (W/kW/MW).
+        v1.20.0 — solax_modbus reports W; FoxESS reports kW (unchanged)."""
+        state = self.hass.states.get(entity_id)
+        if state is None or state.state in ("unknown", "unavailable"):
+            return default
+        try:
+            return power_to_kw(float(state.state), state.attributes.get("unit_of_measurement"))
+        except ValueError:
+            return default
+
+    def _get_energy_kwh(self, entity_id: str, default: float | None = None) -> float | None:
+        """Energy reading in kWh, converted from the entity's unit (Wh/kWh/MWh)."""
+        state = self.hass.states.get(entity_id)
+        if state is None or state.state in ("unknown", "unavailable"):
+            return default
+        try:
+            return energy_to_kwh(float(state.state), state.attributes.get("unit_of_measurement"))
+        except ValueError:
+            return default
+
     @staticmethod
     async def _fetch_json(session: aiohttp.ClientSession, url: str) -> dict:
         async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
@@ -9529,6 +9469,35 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
     @staticmethod
     def _make_result(mode: str = MODE_NORMAL, reason: str = "", **kwargs: Any) -> dict[str, Any]:
         return {"mode": mode, "reason": reason, **kwargs}
+
+    async def async_inverter_self_test(self) -> dict[str, Any]:
+        """v1.20.0 — run the inverter backend's commissioning self-test.
+
+        Refused while Solar AI is actively forcing a mode, so the test never
+        fights a real grid-charge or export session.
+        """
+        if self._current_mode != MODE_NORMAL:
+            return {"ok": False,
+                    "detail": f"Solar AI is in {self._current_mode} mode — "
+                              "run the test while it is in normal (self use) mode."}
+
+        def _net_battery_kw() -> float | None:
+            charge = self._get_power_kw(
+                self.config.get(CONF_BATTERY_CHARGE_ENTITY, FOXESS_BATTERY_CHARGE_POWER))
+            discharge = self._get_power_kw(
+                self.config.get(CONF_BATTERY_DISCHARGE_ENTITY, FOXESS_BATTERY_DISCHARGE_POWER))
+            if charge is None and discharge is None:
+                return None
+            return (charge or 0.0) - (discharge or 0.0)
+
+        def _soc() -> float | None:
+            return self._get_float_state(
+                self.config.get(CONF_BATTERY_SOC_ENTITY, FOXESS_BATTERY_SOC))
+
+        _LOGGER.info("Inverter self-test starting (%s)", self.inverter.title)
+        result = await self.inverter.async_self_test(_net_battery_kw, _soc, asyncio.sleep)
+        _LOGGER.info("Inverter self-test result: %s", result)
+        return result
 
     async def async_restore_normal(self) -> None:
         """Force-restore normal operation (called on unload or disable)."""

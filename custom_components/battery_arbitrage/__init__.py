@@ -5,10 +5,12 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from .const import (
+    CONF_INVERTER_BACKEND,
+    INVERTER_BACKEND_FOXESS,
     CONF_BATTERY_CHARGE_ENTITY,
     CONF_BATTERY_CHARGE_TOTAL_ENTITY,
     CONF_BATTERY_DISCHARGE_ENTITY,
@@ -308,6 +310,14 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.config_entries.async_update_entry(entry, data=new_data, version=15)
         _LOGGER.info("Battery Arbitrage: migrated config entry to v15")
 
+    if entry.version < 16:
+        # v15 → v16 (v1.20.0): pluggable inverter backend. Every entry created
+        # before this version controls a FoxESS inverter — record that
+        # explicitly so the backend choice never depends on a default.
+        new_data.setdefault(CONF_INVERTER_BACKEND, INVERTER_BACKEND_FOXESS)
+        hass.config_entries.async_update_entry(entry, data=new_data, version=16)
+        _LOGGER.info("Battery Arbitrage: migrated config entry to v16")
+
     return True
 
 
@@ -583,6 +593,27 @@ def _register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(DOMAIN, "remove_schedule_slot", handle_remove_schedule_slot)
     hass.services.async_register(DOMAIN, "toggle_schedule_day", handle_toggle_schedule_day)
     hass.services.async_register(DOMAIN, "set_schedule_days", handle_set_schedule_days)
+
+    async def handle_inverter_self_test(call: ServiceCall) -> ServiceResponse:
+        """v1.20.0 — commissioning self-test: verify the inverter's control
+        direction with a short, small charge command. Inverter control stays
+        blocked on backends that require it until this has passed."""
+        from homeassistant.components import persistent_notification  # noqa: PLC0415
+        coordinator = _get_coordinator(call)
+        if not coordinator:
+            return {"ok": False, "detail": "Solar AI is not loaded."}
+        result = await coordinator.async_inverter_self_test()
+        persistent_notification.async_create(
+            hass, result.get("detail", str(result)),
+            title="Solar AI - inverter self-test "
+                  + ("passed" if result.get("ok") else "did not pass"),
+            notification_id=f"{DOMAIN}_inverter_self_test",
+        )
+        return result
+
+    hass.services.async_register(
+        DOMAIN, "inverter_self_test", handle_inverter_self_test,
+        supports_response=SupportsResponse.OPTIONAL)
 
     async def handle_create_dashboard(call: ServiceCall) -> None:
         """v0.51.0 — create or refresh the bundled Solar AI dashboard.

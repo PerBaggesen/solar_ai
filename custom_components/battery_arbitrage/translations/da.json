@@ -1,7 +1,27 @@
 {
   "config": {
     "step": {
-      "user": {
+      "inverter_backend": {
+        "title": "Inverter-integration",
+        "description": "Solar AI fandt mere end én inverter-integration, den kan styre. Hvilken styrer dit husbatteri?",
+        "data": {
+          "inverter_backend": "Inverter-integration"
+        }
+      },
+      "solax_modbus": {
+        "title": "solax_modbus-inverter",
+        "description": "Vælg den solax_modbus-hub, der styrer dit batteri.\n\n**Solar AI starter i prøvekørsel**: den planlægger og logger alle kommandoer (se diagnosesensoren *Inverterstyring*), men sender intet. Før du slår prøvekørsel fra, skal du køre handlingen `battery_arbitrage.inverter_self_test` én gang — den sender en kort ladekommando på 10 % for at bekræfte styreretningen. Inverterstyring er blokeret, indtil testen er bestået.",
+        "data": {
+          "solax_hub_name": "solax_modbus-hub",
+          "inverter_rated_kw": "Inverterens nominelle AC-effekt (kW)",
+          "vpp_watchdog_min": "Hardware-watchdog (minutter)"
+        },
+        "data_description": {
+          "inverter_rated_kw": "Skalerer procentbaserede effektkommandoer. Kontrollér værdien — hubbens egen indstilling kan være forkert.",
+          "vpp_watchdog_min": "Hvis Solar AI holder op med at forny en tvungen opladning/eksport, går inverteren tilbage til egen styring efter så lang tid."
+        }
+      },
+      "live_source": {
         "title": "Live datakilde",
         "description": "Hvor skal Solar AI hente live netstrøm, solcelleproduktion, husforbrug og EV-ladetilstand fra?\n\n• **EVCC** — alt fra EVCC (standard)\n• **Hybrid** — FoxESS for net/sol/forbrug, EVCC for EV-info\n• **Kun FoxESS** — ingen EVCC overhovedet (EV-opladning registreres stadig via FoxESS Modbus TCP eller OCPP indlejret server — se advarslen på næste trin)",
         "data": { "live_data_source": "Live datakilde" }
@@ -114,7 +134,8 @@
       "entity_not_found": "En eller flere enheder kunne ikke findes i Home Assistant",
       "must_acknowledge_no_ev": "Du skal sætte flueben i bekræftelsen for at fortsætte"
     },
-    "abort": { "already_configured": "Solar AI er allerede konfigureret" }
+    "abort": {
+      "no_supported_inverter": "Der blev ikke fundet nogen inverter-integration, som Solar AI kan styre. Installér og opsæt FoxESS Modbus eller solax_modbus med et understøttet inverter-plugin (i øjeblikket Growatt), kontrollér at sensorerne virker, og tilføj derefter Solar AI.", "already_configured": "Solar AI er allerede konfigureret" }
   },
   "options": {
     "step": {
@@ -183,6 +204,8 @@
         "title": "Solar AI — enhedstilknytning",
         "description": "Trin 3 af 3 — tilknyt Solar AI til din invertér og dine batterisensorer. Ret disse hvis dine entity-ID'er afviger fra FoxESS Modbus-standarderne.",
         "data": {
+        "inverter_rated_kw": "Inverterens nominelle AC-effekt (kW)",
+        "vpp_watchdog_min": "Hardware-watchdog (minutter)",
           "foxess_inverter_id": "Invertér-ID",
           "foxess_work_mode_entity": "Arbejdstilstand (select-enhed)",
           "foxess_force_charge_entity": "Tvungen opladningseffekt",
@@ -200,6 +223,9 @@
   },
   "entity": {
     "sensor": {
+      "inverter_control": {
+        "name": "Inverterstyring"
+      },
       "mode": {
         "name": "Driftstilstand",
         "state": {
@@ -509,6 +535,9 @@
       "disk_alarm_threshold": { "name": "Alarmgrænse for lav diskplads (% ledig)" }
     },
     "switch": {
+      "dry_run": {
+        "name": "Prøvekørsel (log kun inverterkommandoer)"
+      },
       "enabled": { "name": "Arbitrage aktiv" },
       "notifications_enabled": { "name": "Notifikationer ved tilstandsskift" },
       "price_resolution_15min": { "name": "15-minutters prisopløsning" },
@@ -540,6 +569,10 @@
     }
   },
   "services": {
+    "inverter_self_test": {
+      "name": "Invertertest",
+      "description": "Sender en kort ladekommando på 10 % for at bekræfte inverterens styreretning og vender derefter tilbage til egetforbrug. Kræves én gang, før Solar AI må styre en solax_modbus-inverter."
+    },
     "force_export": {
       "name": "Tving eksport",
       "description": "Aktiverer øjeblikkeligt Force Discharge-tilstand uanset prisbetingelser."
@@ -558,6 +591,22 @@
     }
   },
   "issues": {
+    "evcc_present": {
+      "title": "evcc styrer muligvis også inverteren",
+      "description": "Solar AI styrer batteriet direkte via solax_modbus, men {reasons}. evcc kan ændre batteritilstanden på den samme inverter, og de to vil modarbejde hinanden. Fjern evcc (eller dens batteristyring), før du slår prøvekørsel fra."
+    },
+    "inverter_competing_schedule": {
+      "title": "Inverterskema konkurrerer med Solar AI",
+      "description": "solax_modbus-hub {hub} har disse skemaer aktiveret i inverteren: {controls}. De ændrer batteriprioriteten under Solar AI's styring. Deaktivér dem (og enhver automatisering, der sætter dem)."
+    },
+    "inverter_write_mismatch": {
+      "title": "Inverterindstillinger bliver ændret tilbage",
+      "description": "Solar AI skrev til disse entiteter, men de holder ikke længere den skrevne værdi: {entities}. Enten fejlede skrivningen, eller en anden styring (automatisering, app, energistyring) overskriver Solar AI. Solar AI genskriver højst hvert 10. minut."
+    },
+    "inverter_not_verified": {
+      "title": "Kør Solar AI's invertertest",
+      "description": "Inverterstyring via solax_modbus-hub {hub} er blokeret, indtil styreretningen er bekræftet. Med Solar AI i normal tilstand og prøvekørsel slået fra: kør handlingen `battery_arbitrage.inverter_self_test` (den sender en kort, lille ladekommando)."
+    },
     "missing_dashboard_cards": {
       "title": "Solar AI-dashboardkort ikke installeret",
       "description": "Solar AI-dashboardet bruger tilpassede Lovelace-kort, der endnu ikke er installeret: {cards}. Installer dem via HACS → Frontend, og genindlæs derefter browseren (dokumentationslinket nedenfor har hvert kort)."

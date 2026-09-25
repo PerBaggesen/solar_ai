@@ -12,6 +12,15 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers import selector
 
 from .const import (
+    CONF_DRY_RUN,
+    CONF_INVERTER_BACKEND,
+    CONF_INVERTER_RATED_KW,
+    CONF_SOLAX_HUB_NAME,
+    CONF_VPP_WATCHDOG_MIN,
+    DEFAULT_INVERTER_RATED_KW,
+    DEFAULT_VPP_WATCHDOG_MIN,
+    INVERTER_BACKEND_FOXESS,
+    INVERTER_BACKEND_SOLAX,
     CONF_BATTERY_CAPACITY,
     CONF_BATTERY_CHARGE_ENTITY,
     CONF_BATTERY_CHARGE_TOTAL_ENTITY,
@@ -151,6 +160,22 @@ from .const import (
 )
 
 from . import discovery
+from .inverters.profiles import get_profile
+
+
+def _solax_hubs(hass) -> list[dict[str, Any]]:
+    """solax_modbus hubs whose plugin Solar AI can control."""
+    from .inverters.solax_modbus import solax_hubs  # noqa: PLC0415
+    return [h for h in solax_hubs(hass)
+            if (p := get_profile(h["plugin"])) is not None and p.control_supported]
+
+
+def _detect_entities(hass, data: dict[str, Any]) -> dict[str, Any]:
+    """Auto-detected entity defaults for the configured inverter backend."""
+    if data.get(CONF_INVERTER_BACKEND) == INVERTER_BACKEND_SOLAX:
+        from .inverters.solax_modbus import discover  # noqa: PLC0415
+        return discover(hass, data.get(CONF_SOLAX_HUB_NAME, ""))
+    return discovery.discover_all(hass)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -172,7 +197,7 @@ def _entity_optional(key: str, current_value: str):
 class BatteryArbitrageConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle the setup wizard."""
 
-    VERSION = 15
+    VERSION = 16
 
     def __init__(self) -> None:
         self._data: dict[str, Any] = {}
@@ -180,15 +205,95 @@ class BatteryArbitrageConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Step 1: Live data source — EVCC, Hybrid, or FoxESS only."""
-        # A — prerequisite pre-flight. The FoxESS Modbus integration must be
-        # installed and producing entities (Solar AI reads and controls a
-        # FoxESS inverter in every mode). Without it, discovery finds nothing
-        # and the wizard would show blank entity pickers — abort with guidance
-        # instead.
-        if not discovery.has_foxess_modbus(self.hass):
-            return self.async_abort(reason="no_foxess_modbus")
+        """Step 1: detect which inverter integrations Solar AI can control.
 
+        v1.20.0 — FoxESS Modbus or a supported solax_modbus hub. Without
+        either, discovery finds nothing and the wizard would show blank entity
+        pickers — abort with guidance instead.
+        """
+        has_foxess = discovery.has_foxess_modbus(self.hass)
+        hubs = _solax_hubs(self.hass)
+        if not has_foxess and not hubs:
+            return self.async_abort(reason="no_supported_inverter")
+        if has_foxess and hubs:
+            return await self.async_step_inverter_backend()
+        if hubs:
+            return await self.async_step_solax_modbus()
+        self._data[CONF_INVERTER_BACKEND] = INVERTER_BACKEND_FOXESS
+        return await self.async_step_live_source()
+
+    async def async_step_inverter_backend(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Both FoxESS and solax_modbus are present — pick one."""
+        if user_input is not None:
+            backend = user_input[CONF_INVERTER_BACKEND]
+            self._data[CONF_INVERTER_BACKEND] = backend
+            if backend == INVERTER_BACKEND_SOLAX:
+                return await self.async_step_solax_modbus()
+            return await self.async_step_live_source()
+        return self.async_show_form(
+            step_id="inverter_backend",
+            data_schema=vol.Schema({
+                vol.Required(CONF_INVERTER_BACKEND, default=INVERTER_BACKEND_FOXESS):
+                    selector.SelectSelector(selector.SelectSelectorConfig(
+                        options=[
+                            {"value": INVERTER_BACKEND_FOXESS, "label": "FoxESS Modbus"},
+                            {"value": INVERTER_BACKEND_SOLAX, "label": "solax_modbus"},
+                        ],
+                        mode=selector.SelectSelectorMode.LIST,
+                    )),
+            }),
+        )
+
+    async def async_step_solax_modbus(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """solax_modbus: pick the hub, confirm rated power and watchdog.
+
+        New solax_modbus setups start in dry run, and control stays blocked
+        until the inverter self-test has verified the control direction.
+        """
+        hubs = _solax_hubs(self.hass)
+        if user_input is not None:
+            self._data.update({
+                CONF_INVERTER_BACKEND: INVERTER_BACKEND_SOLAX,
+                CONF_SOLAX_HUB_NAME: user_input[CONF_SOLAX_HUB_NAME],
+                CONF_INVERTER_RATED_KW: float(user_input[CONF_INVERTER_RATED_KW]),
+                CONF_VPP_WATCHDOG_MIN: int(user_input[CONF_VPP_WATCHDOG_MIN]),
+                CONF_DRY_RUN: True,
+            })
+            return await self.async_step_live_source()
+
+        first = hubs[0]
+        try:
+            rated_default = float(first.get("inverter_power_kw") or DEFAULT_INVERTER_RATED_KW)
+        except (TypeError, ValueError):
+            rated_default = DEFAULT_INVERTER_RATED_KW
+        return self.async_show_form(
+            step_id="solax_modbus",
+            data_schema=vol.Schema({
+                vol.Required(CONF_SOLAX_HUB_NAME, default=first["name"]):
+                    selector.SelectSelector(selector.SelectSelectorConfig(
+                        options=[
+                            {"value": h["name"],
+                             "label": f"{h['title']} — {get_profile(h['plugin']).label}"
+                                      f" ({h.get('host')}:{h.get('port')})"}
+                            for h in hubs
+                        ],
+                        mode=selector.SelectSelectorMode.LIST,
+                    )),
+                vol.Required(CONF_INVERTER_RATED_KW, default=rated_default):
+                    vol.All(vol.Coerce(float), vol.Range(min=1, max=100)),
+                vol.Required(CONF_VPP_WATCHDOG_MIN, default=DEFAULT_VPP_WATCHDOG_MIN):
+                    vol.All(vol.Coerce(int), vol.Range(min=5, max=120)),
+            }),
+        )
+
+    async def async_step_live_source(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Live data source — EVCC, Hybrid, or inverter sensors only."""
         if user_input is not None:
             source = user_input[CONF_LIVE_DATA_SOURCE]
             self._data[CONF_LIVE_DATA_SOURCE] = source
@@ -198,7 +303,7 @@ class BatteryArbitrageConfigFlow(ConfigFlow, domain=DOMAIN):
             return await self.async_step_evcc_url()
 
         return self.async_show_form(
-            step_id="user",
+            step_id="live_source",
             data_schema=vol.Schema({
                 vol.Required(CONF_LIVE_DATA_SOURCE,
                              default=DEFAULT_LIVE_DATA_SOURCE):
@@ -303,7 +408,7 @@ class BatteryArbitrageConfigFlow(ConfigFlow, domain=DOMAIN):
         incomplete or the user ticks 'customise'.
         """
         try:
-            detected = discovery.discover_all(self.hass)
+            detected = _detect_entities(self.hass, self._data)
             spot_detected = self._find_entity(STROMLIGNING_SPOTPRICE_EX_VAT)
             fs_detected = self._find_entity("sensor.energy_production_today")
         except Exception:  # noqa: BLE001
@@ -318,9 +423,15 @@ class BatteryArbitrageConfigFlow(ConfigFlow, domain=DOMAIN):
             CONF_BATTERY_CHARGE_ENTITY, CONF_BATTERY_DISCHARGE_ENTITY,
             CONF_FOXESS_GRID_IMPORT_ENTITY, CONF_FOXESS_GRID_EXPORT_ENTITY,
             CONF_FOXESS_PV_POWER_ENTITY, CONF_FOXESS_LOAD_POWER_ENTITY,
-            CONF_FOXESS_WORK_MODE_ENTITY, CONF_FOXESS_FORCE_CHARGE_ENTITY,
-            CONF_FOXESS_FORCE_DISCHARGE_ENTITY, CONF_FOXESS_INVERTER_ID,
         ]
+        solax = self._data.get(CONF_INVERTER_BACKEND) == INVERTER_BACKEND_SOLAX
+        if not solax:
+            # FoxESS control entities (solax_modbus control is resolved by the
+            # backend itself from the hub, so there is nothing to pick).
+            critical += [
+                CONF_FOXESS_WORK_MODE_ENTITY, CONF_FOXESS_FORCE_CHARGE_ENTITY,
+                CONF_FOXESS_FORCE_DISCHARGE_ENTITY, CONF_FOXESS_INVERTER_ID,
+            ]
         if not all(detected.get(k) for k in critical):
             # Couldn't detect everything — use the full manual wizard.
             return await self._goto_manual_chain()
@@ -361,8 +472,10 @@ class BatteryArbitrageConfigFlow(ConfigFlow, domain=DOMAIN):
             f"• Battery SoC — {detected[CONF_BATTERY_SOC_ENTITY]}\n"
             f"• Solar power — {detected[CONF_FOXESS_PV_POWER_ENTITY]}\n"
             f"• Grid import — {detected[CONF_FOXESS_GRID_IMPORT_ENTITY]}\n"
-            f"• Work mode — {detected[CONF_FOXESS_WORK_MODE_ENTITY]}\n"
-            f"• Spot price — {spot_detected or 'auto-fetched from grid company'}\n"
+            + (f"• Inverter control — solax_modbus hub {self._data.get(CONF_SOLAX_HUB_NAME)} "
+               f"(starts in dry run)\n" if solax else
+               f"• Work mode — {detected[CONF_FOXESS_WORK_MODE_ENTITY]}\n")
+            + f"• Spot price — {spot_detected or 'auto-fetched from grid company'}\n"
             f"• Solar forecast — Forecast.Solar"
         )
         capacity_default = self._data.get(CONF_BATTERY_CAPACITY, DEFAULT_BATTERY_CAPACITY)
@@ -396,23 +509,24 @@ class BatteryArbitrageConfigFlow(ConfigFlow, domain=DOMAIN):
             self._data.setdefault(CONF_BATTERY_CAPACITY, DEFAULT_BATTERY_CAPACITY)
             return await self.async_step_foxess()
 
+        det = _detect_entities(self.hass, self._data)
         return self.async_show_form(
             step_id="foxess_live_entities",
             data_schema=vol.Schema({
                 vol.Required(CONF_FOXESS_GRID_IMPORT_ENTITY,
-                             default=discovery.discover_grid_import(self.hass)
+                             default=det.get(CONF_FOXESS_GRID_IMPORT_ENTITY)
                                       or DEFAULT_FOXESS_GRID_IMPORT):
                     selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
                 vol.Required(CONF_FOXESS_GRID_EXPORT_ENTITY,
-                             default=discovery.discover_grid_export(self.hass)
+                             default=det.get(CONF_FOXESS_GRID_EXPORT_ENTITY)
                                       or DEFAULT_FOXESS_GRID_EXPORT):
                     selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
                 vol.Required(CONF_FOXESS_PV_POWER_ENTITY,
-                             default=discovery.discover_pv_power(self.hass)
+                             default=det.get(CONF_FOXESS_PV_POWER_ENTITY)
                                       or DEFAULT_FOXESS_PV_POWER):
                     selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
                 vol.Required(CONF_FOXESS_LOAD_POWER_ENTITY,
-                             default=discovery.discover_load_power(self.hass)
+                             default=det.get(CONF_FOXESS_LOAD_POWER_ENTITY)
                                       or DEFAULT_FOXESS_LOAD_POWER):
                     selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
             }),
@@ -421,7 +535,10 @@ class BatteryArbitrageConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_foxess(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Step 2: Inverter control entities."""
+        """Step 2: Inverter control entities (FoxESS only — the solax_modbus
+        backend resolves its control entities from the hub itself)."""
+        if self._data.get(CONF_INVERTER_BACKEND) == INVERTER_BACKEND_SOLAX:
+            return await self.async_step_battery_sensors()
         if user_input is not None:
             self._data.update(user_input)
             return await self.async_step_battery_sensors()
@@ -466,26 +583,27 @@ class BatteryArbitrageConfigFlow(ConfigFlow, domain=DOMAIN):
         # well-known default entity ID so the user still sees something
         # reasonable when discovery returns None (e.g. integration not yet
         # installed at the time the wizard is opened).
+        det = _detect_entities(self.hass, self._data)
         return self.async_show_form(
             step_id="battery_sensors",
             data_schema=vol.Schema({
                 vol.Required(CONF_BATTERY_SOC_ENTITY,
-                             default=discovery.discover_battery_soc(self.hass) or FOXESS_BATTERY_SOC):
+                             default=det.get(CONF_BATTERY_SOC_ENTITY) or FOXESS_BATTERY_SOC):
                     selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
                 vol.Required(CONF_CELL_TEMP_ENTITY,
-                             default=discovery.discover_cell_temp_low(self.hass) or FOXESS_CELL_TEMP_LOW):
+                             default=det.get(CONF_CELL_TEMP_ENTITY) or FOXESS_CELL_TEMP_LOW):
                     selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
                 vol.Required(CONF_BATTERY_CHARGE_ENTITY,
-                             default=discovery.discover_battery_charge_power(self.hass) or FOXESS_BATTERY_CHARGE_POWER):
+                             default=det.get(CONF_BATTERY_CHARGE_ENTITY) or FOXESS_BATTERY_CHARGE_POWER):
                     selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
                 vol.Required(CONF_BATTERY_DISCHARGE_ENTITY,
-                             default=discovery.discover_battery_discharge_power(self.hass) or FOXESS_BATTERY_DISCHARGE_POWER):
+                             default=det.get(CONF_BATTERY_DISCHARGE_ENTITY) or FOXESS_BATTERY_DISCHARGE_POWER):
                     selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
                 vol.Required(CONF_BATTERY_CHARGE_TOTAL_ENTITY,
-                             default=discovery.discover_battery_charge_total(self.hass) or FOXESS_BATTERY_CHARGE_TOTAL):
+                             default=det.get(CONF_BATTERY_CHARGE_TOTAL_ENTITY) or FOXESS_BATTERY_CHARGE_TOTAL):
                     selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
                 vol.Required(CONF_BATTERY_DISCHARGE_TOTAL_ENTITY,
-                             default=discovery.discover_battery_discharge_total(self.hass) or FOXESS_BATTERY_DISCHARGE_TOTAL):
+                             default=det.get(CONF_BATTERY_DISCHARGE_TOTAL_ENTITY) or FOXESS_BATTERY_DISCHARGE_TOTAL):
                     selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
             }),
         )
@@ -1145,9 +1263,19 @@ class BatteryArbitrageOptionsFlow(OptionsFlow):
 
         data = self._entry.data
 
-        return self.async_show_form(
-            step_id="entities",
-            data_schema=vol.Schema({
+        if data.get(CONF_INVERTER_BACKEND) == INVERTER_BACKEND_SOLAX:
+            # v1.20.0 — solax_modbus control entities are resolved from the
+            # hub; only its rated power and watchdog are editable here.
+            inverter_fields = {
+                vol.Required(CONF_INVERTER_RATED_KW,
+                             default=data.get(CONF_INVERTER_RATED_KW, DEFAULT_INVERTER_RATED_KW)):
+                    vol.All(vol.Coerce(float), vol.Range(min=1, max=100)),
+                vol.Required(CONF_VPP_WATCHDOG_MIN,
+                             default=data.get(CONF_VPP_WATCHDOG_MIN, DEFAULT_VPP_WATCHDOG_MIN)):
+                    vol.All(vol.Coerce(int), vol.Range(min=5, max=120)),
+            }
+        else:
+            inverter_fields = {
                 vol.Required(CONF_FOXESS_INVERTER_ID,
                              default=data.get(CONF_FOXESS_INVERTER_ID, "")):
                     str,
@@ -1163,6 +1291,12 @@ class BatteryArbitrageOptionsFlow(OptionsFlow):
                 vol.Required(CONF_FOXESS_MAX_DISCHARGE_ENTITY,
                              default=data.get(CONF_FOXESS_MAX_DISCHARGE_ENTITY, FOXESS_MAX_DISCHARGE_ENTITY)):
                     selector.EntitySelector(selector.EntitySelectorConfig(domain="number")),
+            }
+
+        return self.async_show_form(
+            step_id="entities",
+            data_schema=vol.Schema({
+                **inverter_fields,
                 vol.Required(CONF_BATTERY_SOC_ENTITY,
                              default=data.get(CONF_BATTERY_SOC_ENTITY, FOXESS_BATTERY_SOC)):
                     selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),

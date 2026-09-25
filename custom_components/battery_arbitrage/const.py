@@ -46,6 +46,36 @@ CONF_FOXESS_MAX_DISCHARGE_ENTITY = "foxess_max_discharge_entity"
 CONF_STROMLIGNING_ENTITY = "stromligning_entity"   # legacy key — migrated to CONF_SPOT_PRICE_ENTITY
 CONF_SPOT_PRICE_ENTITY = "spot_price_entity"        # generic spot-price source (any DKK/kWh sensor)
 
+# Inverter backend — which integration Solar AI reads and controls the battery
+# through. FoxESS was the only option before v1.20.0 (migration v15→v16 sets it
+# explicitly on existing entries).
+CONF_INVERTER_BACKEND = "inverter_backend"
+INVERTER_BACKEND_FOXESS = "foxess_modbus"
+INVERTER_BACKEND_SOLAX = "solax_modbus"
+DEFAULT_INVERTER_BACKEND = INVERTER_BACKEND_FOXESS
+# solax_modbus backend: the hub (config entry "name" option) to control.
+CONF_SOLAX_HUB_NAME = "solax_hub_name"
+# Rated inverter AC power (kW) — scales percentage-based power commands.
+CONF_INVERTER_RATED_KW = "inverter_rated_kw"
+DEFAULT_INVERTER_RATED_KW = 10.0
+# Hardware watchdog for timed remote control (e.g. Growatt VPP), minutes.
+CONF_VPP_WATCHDOG_MIN = "vpp_watchdog_min"
+DEFAULT_VPP_WATCHDOG_MIN = 15
+# Dry run: compute and log every inverter/charger command without sending it.
+CONF_DRY_RUN = "dry_run"
+# Power commands are capped to this % of rated power until this many forced
+# cycles have been confirmed by the inverter (commissioning safety).
+COMMISSIONING_MAX_PCT = 50
+COMMISSIONING_CYCLES = 3
+
+# Neutral aliases for the live-sensor keys. The stored key strings keep their
+# historical "foxess_" names so existing config entries need no migration; the
+# sensors themselves may come from any integration.
+CONF_GRID_IMPORT_ENTITY = CONF_FOXESS_GRID_IMPORT_ENTITY
+CONF_GRID_EXPORT_ENTITY = CONF_FOXESS_GRID_EXPORT_ENTITY
+CONF_PV_POWER_ENTITY = CONF_FOXESS_PV_POWER_ENTITY
+CONF_LOAD_POWER_ENTITY = CONF_FOXESS_LOAD_POWER_ENTITY
+
 # Configurable battery sensor entity IDs (default to FoxESS Modbus names; any compatible sensor works)
 CONF_BATTERY_SOC_ENTITY            = "battery_soc_entity"
 CONF_CELL_TEMP_ENTITY              = "cell_temp_entity"

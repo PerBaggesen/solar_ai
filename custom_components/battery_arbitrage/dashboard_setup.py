@@ -74,6 +74,52 @@ _FOREIGN_ENTITY_KEYS: dict[str, str] = {
     "select.foxessmodbus_work_mode": CONF_FOXESS_WORK_MODE_ENTITY,
 }
 
+# v1.20.0 — the bundled dashboards reference the FoxESS Modbus default entity
+# ids. On creation they are remapped to the entities configured in Solar AI,
+# so a non-FoxESS install (e.g. solax_modbus) gets working cards.
+_ENTITY_REMAP: dict[str, str] = {
+    "sensor.foxessmodbus_battery_soc_1": CONF_BATTERY_SOC_ENTITY,
+    "sensor.foxessmodbus_battery_charge": CONF_BATTERY_CHARGE_ENTITY,
+    "sensor.foxessmodbus_battery_discharge": CONF_BATTERY_DISCHARGE_ENTITY,
+    "sensor.foxessmodbus_grid_consumption": CONF_FOXESS_GRID_IMPORT_ENTITY,
+    "sensor.foxessmodbus_feed_in": CONF_FOXESS_GRID_EXPORT_ENTITY,
+    "sensor.foxessmodbus_load_power": CONF_FOXESS_LOAD_POWER_ENTITY,
+    "sensor.pv_power_foxessmodbus": CONF_FOXESS_PV_POWER_ENTITY,
+    "select.foxessmodbus_work_mode": CONF_FOXESS_WORK_MODE_ENTITY,
+}
+
+
+def remap_entities(node: Any, mapping: dict[str, str]) -> Any:
+    """Replace whole entity ids in every string of a dashboard config."""
+    if not mapping:
+        return node
+    pattern = re.compile(
+        r"(?<![a-z0-9_.])(?:"
+        + "|".join(re.escape(k) for k in sorted(mapping, key=len, reverse=True))
+        + r")(?![a-z0-9_])")
+
+    def _walk(value: Any) -> Any:
+        if isinstance(value, str):
+            return pattern.sub(lambda m: mapping[m.group(0)], value)
+        if isinstance(value, list):
+            return [_walk(v) for v in value]
+        if isinstance(value, dict):
+            return {k: _walk(v) for k, v in value.items()}
+        return value
+
+    return _walk(node)
+
+
+def _configured_remap(hass: HomeAssistant) -> dict[str, str]:
+    entries = hass.config_entries.async_entries(DOMAIN)
+    if not entries:
+        return {}
+    data = entries[0].data
+    return {
+        default: data[key] for default, key in _ENTITY_REMAP.items()
+        if data.get(key) and data[key] != default
+    }
+
 # v0.74.0 — the bundled dashboard now ships its own cards (registered
 # automatically by frontend.py, no HACS install needed), so this list is
 # empty. Kept as a list (not deleted) since async_check_dashboard_cards below
@@ -218,6 +264,7 @@ async def async_create_dashboard(hass: HomeAssistant, *, force: bool = False) ->
         config = await hass.async_add_executor_job(_load_dashboard_yaml, hass.config.language)
         if not config:
             return None
+        config = remap_entities(config, _configured_remap(hass))
 
         # v1.20.0 — rewrite the bundled ids to this install's before writing.
         entity_map = await hass.async_add_executor_job(_load_entity_map)

@@ -1,7 +1,27 @@
 {
   "config": {
     "step": {
-      "user": {
+      "inverter_backend": {
+        "title": "Inverter integration",
+        "description": "Solar AI found more than one inverter integration it can control. Which one controls your home battery?",
+        "data": {
+          "inverter_backend": "Inverter integration"
+        }
+      },
+      "solax_modbus": {
+        "title": "solax_modbus inverter",
+        "description": "Pick the solax_modbus hub that controls your battery.\n\n**Solar AI starts in dry run**: it plans and logs every command (see the *Inverter control* diagnostic sensor) but sends nothing. Before turning dry run off, run the `battery_arbitrage.inverter_self_test` action once — it sends a short 10 % charge command to confirm the control direction. Inverter control stays blocked until that test has passed.",
+        "data": {
+          "solax_hub_name": "solax_modbus hub",
+          "inverter_rated_kw": "Inverter rated AC power (kW)",
+          "vpp_watchdog_min": "Hardware watchdog (minutes)"
+        },
+        "data_description": {
+          "inverter_rated_kw": "Scales percentage-based power commands. Check this — the hub's own setting can be wrong.",
+          "vpp_watchdog_min": "If Solar AI stops refreshing a forced charge/export, the inverter returns to its own control after this long."
+        }
+      },
+      "live_source": {
         "title": "Live Data Source",
         "description": "Where should Solar AI get the live grid power, PV production, house load, and EV charging state from?\n\n• **EVCC** — everything from EVCC (default)\n• **Hybrid** — FoxESS for grid/PV/load, EVCC for EV info\n• **FoxESS only** — no EVCC at all (EV charging is still detected via FoxESS Modbus TCP or the OCPP embedded server — see the warning on the next step)",
         "data": { "live_data_source": "Live data source" }
@@ -126,6 +146,7 @@
       "must_acknowledge_no_ev": "You must tick the acknowledgement to continue"
     },
     "abort": {
+      "no_supported_inverter": "No inverter integration Solar AI can control was found. Install and set up FoxESS Modbus, or solax_modbus with a supported inverter plugin (currently Growatt), confirm its sensors are working, then add Solar AI.",
       "already_configured": "Solar AI is already configured",
       "no_foxess_modbus": "The FoxESS Modbus integration isn't installed yet (or has no entities). Solar AI reads and controls your FoxESS inverter through it, so install and set up FoxESS Modbus first, confirm its sensors are working, then add Solar AI."
     }
@@ -197,6 +218,8 @@
         "title": "Solar AI — Entity Mapping",
         "description": "Step 3 of 3 — map Solar AI to your inverter and battery sensors. Change these if your entity IDs differ from the FoxESS Modbus defaults.",
         "data": {
+        "inverter_rated_kw": "Inverter rated AC power (kW)",
+        "vpp_watchdog_min": "Hardware watchdog (minutes)",
           "foxess_inverter_id": "Inverter ID",
           "foxess_work_mode_entity": "Work mode entity",
           "foxess_force_charge_entity": "Force charge power entity",
@@ -214,6 +237,9 @@
   },
   "entity": {
     "sensor": {
+      "inverter_control": {
+        "name": "Inverter control"
+      },
       "mode": {
         "name": "Operating mode",
         "state": {
@@ -523,6 +549,9 @@
       "disk_alarm_threshold": { "name": "Low-disk alarm threshold (% free)" }
     },
     "switch": {
+      "dry_run": {
+        "name": "Dry run (log inverter commands only)"
+      },
       "enabled": { "name": "Arbitrage enabled" },
       "notifications_enabled": { "name": "Mode-change notifications" },
       "price_resolution_15min": { "name": "15-minute price resolution" },
@@ -554,6 +583,10 @@
     }
   },
   "services": {
+    "inverter_self_test": {
+      "name": "Inverter self-test",
+      "description": "Send a short 10 % charge command to verify the inverter's control direction, then return to self use. Required once before Solar AI may control a solax_modbus inverter."
+    },
     "force_export": {
       "name": "Force export",
       "description": "Immediately activate Force Discharge mode regardless of price conditions."
@@ -572,6 +605,22 @@
     }
   },
   "issues": {
+    "evcc_present": {
+      "title": "evcc may also be controlling the inverter",
+      "description": "Solar AI controls the battery directly through solax_modbus, but {reasons}. evcc can change the battery mode on the same inverter, and the two would fight. Remove evcc (or its battery control) before turning off dry run."
+    },
+    "inverter_competing_schedule": {
+      "title": "Inverter schedule competes with Solar AI",
+      "description": "solax_modbus hub {hub} has these inverter-side schedules enabled: {controls}. They change the battery priority underneath Solar AI's control. Disable them (and any automation that sets them)."
+    },
+    "inverter_write_mismatch": {
+      "title": "Inverter settings are being changed back",
+      "description": "Solar AI wrote to these entities, but they no longer hold the written value: {entities}. Either the write failed or another controller (automation, app, energy manager) is overriding Solar AI. Solar AI re-asserts at most every 10 minutes."
+    },
+    "inverter_not_verified": {
+      "title": "Run the Solar AI inverter self-test",
+      "description": "Inverter control through solax_modbus hub {hub} is blocked until its control direction is verified. With Solar AI in normal mode and dry run off, run the `battery_arbitrage.inverter_self_test` action (it sends a short, small charge command)."
+    },
     "missing_dashboard_cards": {
       "title": "Solar AI dashboard cards not installed",
       "description": "The Solar AI dashboard uses custom Lovelace cards that aren't installed yet: {cards}. Install them from HACS → Frontend, then reload your browser (the documentation link below has each card)."

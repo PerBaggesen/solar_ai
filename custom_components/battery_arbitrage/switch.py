@@ -12,7 +12,7 @@ from homeassistant.helpers.entity import EntityCategory
 
 from .const import (
     DOMAIN, EV_SCHEDULE_DAYS, EV_SCHEDULE_DEFAULT_DAYS, EV_SCHEDULES_MAX,
-    CONF_OCPP_EMBEDDED, DEFAULT_OCPP_EMBEDDED,
+    CONF_OCPP_EMBEDDED, DEFAULT_OCPP_EMBEDDED, CONF_DRY_RUN,
 )
 from .coordinator import BatteryArbitrageCoordinator
 from .sensor import _device_info
@@ -77,6 +77,7 @@ async def async_setup_entry(
     entities.append(BatteryArbitrageOcppServerSwitch(coordinator, entry))
     # v0.59.20 — opt-in cross-source forecast fallback (Strømligning ↔ EDS).
     entities.append(BatteryArbitragePriceFallbackSwitch(coordinator, entry))
+    entities.append(BatteryArbitrageDryRunSwitch(coordinator, entry))
     async_add_entities(entities)
 
 
@@ -596,3 +597,45 @@ class BatteryArbitrageDynamicFloorSwitch(
         self.coordinator._stored["dynamic_discharge_floor"] = False
         await self.coordinator._store.async_save(self.coordinator._stored)
         self.async_write_ha_state()
+
+
+class BatteryArbitrageDryRunSwitch(
+    CoordinatorEntity[BatteryArbitrageCoordinator], SwitchEntity
+):
+    """v1.20.0 — Dry run: compute and log every inverter command, send none.
+
+    Used to commission a new inverter backend: Solar AI runs its full decision
+    logic and records what it *would* write (see the Inverter control
+    diagnostic sensor) without touching the hardware. New solax_modbus setups
+    start with dry run on.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "dry_run"
+    _attr_device_class = SwitchDeviceClass.SWITCH
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_icon = "mdi:test-tube"
+
+    def __init__(
+        self,
+        coordinator: BatteryArbitrageCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_dry_run"
+        self._attr_device_info = _device_info(entry)
+
+    @property
+    def is_on(self) -> bool:
+        return bool(self.coordinator._setting(CONF_DRY_RUN, False))
+
+    async def _set(self, value: bool) -> None:
+        self.coordinator._stored[CONF_DRY_RUN] = value
+        await self.coordinator._store.async_save(self.coordinator._stored)
+        self.async_write_ha_state()
+
+    async def async_turn_on(self, **kwargs: object) -> None:
+        await self._set(True)
+
+    async def async_turn_off(self, **kwargs: object) -> None:
+        await self._set(False)

@@ -20,6 +20,15 @@ restore_normal:
     EVCC to Self-Use / normal battery mode.
   fields: {}
 
+inverter_self_test:
+  name: Inverter self-test
+  description: >
+    Send a short 10 % charge command (5-minute hardware timeout) to verify the
+    inverter's control direction, then return to self use. Required once
+    before Solar AI may control a solax_modbus inverter. Run it with Solar AI
+    in normal mode, dry run off, and the battery between 15 and 90 % SoC.
+  fields: {}
+
 reset_learning:
   name: Reset learned data
   description: >
