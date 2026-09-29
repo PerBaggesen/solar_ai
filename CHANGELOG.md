@@ -9,6 +9,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.21.2] — 2026-09-29
+
+### Fixed — the last dashboard entities that did not resolve on a solax_modbus install
+
+After the 1.20.0 resolver, a Growatt install was still left with four missing entities. When the dashboard is created:
+
+- **Solar energy today** is taken from the solax_modbus hub. Profiles gain `dashboard_keys` — bundled FoxESS id → solax_modbus entity keys — for entities the dashboard shows that no config key holds; Growatt and SolaX map `today_s_solar_energy`.
+- **FoxESS-only rows** (the work mode select) are dropped on a non-FoxESS backend instead of rendering empty, and the *FoxESS inverter* card is retitled *Inverter*.
+- **Notification devices.** The bundled YAML listed the author's own phones. Those rows are replaced by this install's per-device switches (one per `notify.mobile_app_*` service); with none, the rows and their divider are removed.
+
+Run `battery_arbitrage.create_dashboard` with `force: true` to pick this up.
+
+---
+
 ## [1.21.1] — 2026-09-29
 
 ### Fixed — the status card showed watts as kilowatts

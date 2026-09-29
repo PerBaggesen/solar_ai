@@ -112,6 +112,10 @@ class GrowattVppProfile(PluginProfile):
         CONF_FOXESS_LOAD_POWER_ENTITY: ("total_load_power", "house_load"),
     }
 
+    dashboard_keys = {
+        "sensor.foxessmodbus_solar_energy_today": ("today_s_solar_energy",),
+    }
+
     # GEN4/TL-XH: "EMS Discharging Stop SOC (on grid)" (reg 3067, newer
     # firmware) and "EMS Discharging Rate" (reg 3036). Both are disabled by
     # default in solax_modbus; the capability is on only if enabled.

@@ -5,7 +5,13 @@ import unittest
 
 import _bootstrap  # noqa: F401
 
-from battery_arbitrage.dashboard_setup import rebase_view_links, remap_entities
+from battery_arbitrage.dashboard_setup import (
+    _retitle_foxess_cards,
+    prune_missing_rows,
+    rebase_view_links,
+    remap_entities,
+    replace_notify_rows,
+)
 
 
 class RemapTest(unittest.TestCase):
@@ -70,6 +76,42 @@ class ViewLinkTest(unittest.TestCase):
     def test_bundled_url_is_identity(self):
         cfg = {"path": "/battery-arbitrage/logs"}
         self.assertEqual(rebase_view_links(cfg, "battery-arbitrage"), cfg)
+
+
+class InstallAdaptTest(unittest.TestCase):
+    NOTIFY = {"entities": [
+        {"entity": "switch.solar_ai_notify_low_disk_space", "name": "Low disk"},
+        {"type": "divider"},
+        {"entity": "switch.solar_ai_notifikation_iphone", "name": "📱 Telefon"},
+        {"entity": "switch.solar_ai_notifikation_ipad_air", "name": "📱 Tablet"},
+    ]}
+
+    def test_notify_rows_replaced_with_install_devices(self):
+        rows = [{"entity": "switch.a", "name": "📱 A"}, {"entity": "switch.b", "name": "📱 B"}]
+        out = replace_notify_rows(self.NOTIFY, rows)["entities"]
+        self.assertEqual([r.get("entity") for r in out],
+                         ["switch.solar_ai_notify_low_disk_space", None, "switch.a", "switch.b"])
+
+    def test_no_devices_drops_rows_and_divider(self):
+        out = replace_notify_rows(self.NOTIFY, [])["entities"]
+        self.assertEqual(out, [{"entity": "switch.solar_ai_notify_low_disk_space", "name": "Low disk"}])
+
+    def test_prune_missing_rows(self):
+        cfg = {"cards": [
+            {"title": "FoxESS inverter", "entities": [
+                {"entity": "select.foxessmodbus_work_mode"},
+                {"entity": "sensor.growatt_soc"}]},
+            {"entities": ["select.foxessmodbus_only"]},
+            {"type": "custom:x", "solar_entity": "sensor.foxessmodbus_x"},
+        ]}
+        out = prune_missing_rows(cfg, lambda e: "foxessmodbus" in e)["cards"]
+        self.assertEqual(out[0]["entities"], [{"entity": "sensor.growatt_soc"}])
+        self.assertEqual(len(out), 2)  # the emptied card is dropped
+        self.assertEqual(out[1]["solar_entity"], "sensor.foxessmodbus_x")  # config keys untouched
+
+    def test_retitle(self):
+        out = _retitle_foxess_cards({"cards": [{"title": "FoxESS inverter"}, {"title": "Other"}]})
+        self.assertEqual([c["title"] for c in out["cards"]], ["Inverter", "Other"])
 
 
 if __name__ == "__main__":

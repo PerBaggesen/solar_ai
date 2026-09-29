@@ -44,3 +44,7 @@ class SolaxProfile(PluginProfile):
         CONF_FOXESS_PV_POWER_ENTITY: ("pv_power_total",),
         CONF_FOXESS_LOAD_POWER_ENTITY: ("house_load",),
     }
+
+    dashboard_keys = {
+        "sensor.foxessmodbus_solar_energy_today": ("today_s_solar_energy",),
+    }

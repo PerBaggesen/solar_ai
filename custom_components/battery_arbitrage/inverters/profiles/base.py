@@ -61,6 +61,11 @@ class PluginProfile:
     # preference. Used by discovery to prefill the config flow.
     sensor_keys: dict[str, tuple[str, ...]] = {}
 
+    # Bundled dashboard entity id (the FoxESS Modbus default) → candidate
+    # solax_modbus entity keys, for entities the dashboard shows that no Solar
+    # AI config key holds. Resolved when the dashboard is created.
+    dashboard_keys: dict[str, tuple[str, ...]] = {}
+
     # Optional capability entity keys (None → capability absent).
     min_soc_key: str | None = None
     discharge_lock_key: str | None = None

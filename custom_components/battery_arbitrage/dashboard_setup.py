@@ -31,7 +31,11 @@ from .const import (
     CONF_FOXESS_LOAD_POWER_ENTITY,
     CONF_FOXESS_PV_POWER_ENTITY,
     CONF_FOXESS_WORK_MODE_ENTITY,
+    CONF_INVERTER_BACKEND,
+    CONF_SOLAX_HUB_NAME,
     DOMAIN,
+    INVERTER_BACKEND_FOXESS,
+    INVERTER_BACKEND_SOLAX,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -190,9 +194,137 @@ def _build_substitutions(
             live = data.get(conf_key)
             if isinstance(live, str) and live and live != yaml_id:
                 subs[yaml_id] = live
+        # v1.21.1 — dashboard-only inverter entities (e.g. solar energy today)
+        # have no config key; a solax_modbus profile names their keys.
+        if data.get(CONF_INVERTER_BACKEND) == INVERTER_BACKEND_SOLAX:
+            subs.update(_solax_dashboard_subs(hass, data.get(CONF_SOLAX_HUB_NAME) or ""))
         break
 
     return subs, unresolved
+
+
+def _solax_dashboard_subs(hass: HomeAssistant, hub_name: str) -> dict[str, str]:
+    """Bundled FoxESS id → this hub's solax_modbus entity, per its profile."""
+    from .inverters.profiles import get_profile  # noqa: PLC0415
+    from .inverters.solax_modbus import resolve_key, solax_hubs  # noqa: PLC0415
+
+    hub = next((h for h in solax_hubs(hass) if h["name"] == hub_name), None)
+    profile = get_profile(hub["plugin"]) if hub else None
+    if profile is None:
+        return {}
+    subs: dict[str, str] = {}
+    for yaml_id, keys in profile.dashboard_keys.items():
+        for key in keys:
+            live = resolve_key(hass, hub_name, key, ("sensor",))
+            if live:
+                subs[yaml_id] = live
+                break
+    return subs
+
+
+# v1.21.1 — the bundled YAML lists the author's own phones under the
+# notification settings. The per-device switches are created from this
+# install's notify.mobile_app_* services, so those rows are swapped for the
+# install's own (unique id "<entry>_target_notify_...").
+_BUNDLED_NOTIFY_TARGETS = (
+    "switch.solar_ai_notifikation_iphone",
+    "switch.solar_ai_notifikation_ipad_air",
+)
+_NOTIFY_TARGET_UID = "_target_notify_"
+
+
+def _row_entity(row: Any) -> str | None:
+    if isinstance(row, str):
+        return row
+    if isinstance(row, dict) and isinstance(row.get("entity"), str):
+        return row["entity"]
+    return None
+
+
+def replace_notify_rows(node: Any, rows: list[dict[str, str]]) -> Any:
+    """Swap the bundled notify-target rows for `rows` (in place of the first)."""
+    if isinstance(node, dict):
+        return {k: replace_notify_rows(v, rows) for k, v in node.items()}
+    if not isinstance(node, list):
+        return node
+    items = [replace_notify_rows(v, rows) for v in node]
+    if not any(_row_entity(v) in _BUNDLED_NOTIFY_TARGETS for v in items):
+        return items
+    out: list[Any] = []
+    placed = False
+    for item in items:
+        if _row_entity(item) in _BUNDLED_NOTIFY_TARGETS:
+            if not placed:
+                out.extend(dict(r) for r in rows)
+                placed = True
+            continue
+        out.append(item)
+    # No devices: drop the divider that introduced the device rows.
+    while out and isinstance(out[-1], dict) and out[-1].get("type") == "divider":
+        out.pop()
+    return out
+
+
+def prune_missing_rows(node: Any, is_missing) -> Any:
+    """Drop entity rows for which is_missing(entity_id) is true.
+
+    A card whose `entities` list is emptied by this is dropped with it.
+    """
+    if isinstance(node, dict):
+        out = {}
+        for k, v in node.items():
+            out[k] = prune_missing_rows(v, is_missing)
+        return out
+    if not isinstance(node, list):
+        return node
+    out = []
+    for item in node:
+        entity = _row_entity(item)
+        if entity is not None and is_missing(entity):
+            continue
+        new = prune_missing_rows(item, is_missing)
+        if (isinstance(item, dict) and item.get("entities")
+                and isinstance(new, dict) and new.get("entities") == []):
+            continue
+        out.append(new)
+    return out
+
+
+def _adapt_to_install(hass: HomeAssistant, config: Any) -> Any:
+    """v1.21.1 — install-specific rows the id resolver cannot express."""
+    registry = er.async_get(hass)
+    rows = []
+    for entry in sorted(registry.entities.values(), key=lambda e: e.entity_id):
+        if (entry.platform != DOMAIN or entry.domain != "switch" or entry.disabled_by
+                or _NOTIFY_TARGET_UID not in (entry.unique_id or "")):
+            continue
+        name = entry.name or entry.original_name or entry.entity_id
+        rows.append({"entity": entry.entity_id,
+                     "name": "📱 " + re.sub(r"^Notifikation:\s*", "", name)})
+    config = replace_notify_rows(config, rows)
+
+    entries = hass.config_entries.async_entries(DOMAIN)
+    data = {**entries[0].data, **entries[0].options} if entries else {}
+    if data.get(CONF_INVERTER_BACKEND, INVERTER_BACKEND_FOXESS) != INVERTER_BACKEND_FOXESS:
+        # FoxESS-only rows (e.g. the work mode select) left unresolved on
+        # another inverter: drop them rather than show empty rows.
+        def _missing(entity_id: str) -> bool:
+            return ("foxessmodbus" in entity_id and hass.states.get(entity_id) is None
+                    and registry.async_get(entity_id) is None)
+        config = prune_missing_rows(config, _missing)
+        config = _retitle_foxess_cards(config)
+    return config
+
+
+def _retitle_foxess_cards(node: Any) -> Any:
+    if isinstance(node, dict):
+        out = {k: _retitle_foxess_cards(v) for k, v in node.items()}
+        if out.get("title") in ("FoxESS inverter", "FoxESS-inverter"):
+            out["title"] = "Inverter"
+        return out
+    if isinstance(node, list):
+        return [_retitle_foxess_cards(v) for v in node]
+    return node
 
 
 def _referenced_entities(node: Any, found: set[str] | None = None) -> set[str]:
@@ -268,6 +400,7 @@ async def async_create_dashboard(hass: HomeAssistant, *, force: bool = False) ->
                     "Solar AI dashboard: %d id(s) had no match in the registry: %s",
                     len(unresolved), ", ".join(sorted(unresolved)[:10]),
                 )
+        config = _adapt_to_install(hass, config)
 
         # Persist (or fetch) the dashboard metadata via the storage collection.
         collection = DashboardsCollection(hass)
