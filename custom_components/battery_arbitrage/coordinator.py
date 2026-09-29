@@ -16,6 +16,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .actuation import Actuator
+from .ha_sources import forecast_solar_rates, stromligning_ha_prices, tariff_schedule_from_prices
 from .inverters import build_backend
 from .units import energy_to_kwh, power_to_kw
 from .const import (
@@ -365,6 +366,7 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
         # alongside the tariff schedule. Empty in manual mode.
         self._cached_stromligning_prices: dict[str, dict] = {}
         self._last_stromligning_refresh: datetime | None = None
+        self._stromligning_from_ha: bool = False
         # EDS day-ahead spot-price cache (v0.59.4). Last good rate list, so a
         # restart — or a failed/garbled/rate-limited fetch right after one —
         # falls back to the last known prices instead of blanking the plan.
@@ -1266,6 +1268,14 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
                 _LOGGER.warning("Solar forecast fetch failed (%s) — using cached/empty data", solar_err)
                 solar_ok = bool(self._cached_solar_rates.get("rates"))
 
+            # Strømligning retail prices from the HA integration pick up
+            # tomorrow's prices within the hour of publication. (The API path
+            # inside keeps its own 24 h cache window.)
+            try:
+                await self._maybe_refresh_stromligning_prices(session, now)
+            except Exception as err:
+                _LOGGER.warning("Strømligning price refresh failed: %s", err)
+
             # EDS spot prices — primary price source; _fetch_eds_prices handles its own errors
             eds_data = await self._fetch_eds_prices(session, price_area, now)
             fresh_prices = False
@@ -1359,21 +1369,37 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
                 # through tier-A and tier-B records (Dinel publishes 7 parallel
                 # bands; previously all 6 distinct profiles were summed,
                 # overstating the per-kWh tariff ~3x).
-                dso_sched = await fetch_tariff_schedule(
-                    session, dso_gln, now,
-                    require_all_prices=True,
-                    require_varying_prices=True,
-                    note_substring="Nettarif C",
-                )
-                # Energinet: codes 40000 (Transmissions nettarif) + 41000
-                # (Systemtarif) — both apply to residential consumers.
-                # v0.39.8 — 41000 added; was missing before, halving the
-                # Energinet contribution. Excludes 40010 (Indfødningstarif
-                # produktion), 40020 (HV 132/150 kV), capacity / industrial.
-                energinet_sched = await fetch_tariff_schedule(
-                    session, ENERGINET_GLN, now,
-                    allowed_codes=ENERGINET_TARIFF_CODES,
-                )
+                #
+                # When prices come from the HA Strømligning integration, its
+                # per-slot breakdown already carries the DSO distribution and
+                # both Energinet tariffs for the user's actual grid area, so
+                # the schedule is built from that and Datahub is not queried
+                # for consumption tariffs at all.
+                sl_sched = None
+                if self._stromligning_from_ha and self._cached_stromligning_prices:
+                    sl_sched = tariff_schedule_from_prices(
+                        self._cached_stromligning_prices, _CPH_TZ, now,
+                    )
+                if sl_sched is not None:
+                    dso_sched = sl_sched
+                    energinet_sched = [0.0] * 24   # already included above
+                    _LOGGER.debug("Tariff schedule taken from Strømligning: %s", sl_sched)
+                else:
+                    dso_sched = await fetch_tariff_schedule(
+                        session, dso_gln, now,
+                        require_all_prices=True,
+                        require_varying_prices=True,
+                        note_substring="Nettarif C",
+                    )
+                    # Energinet: codes 40000 (Transmissions nettarif) + 41000
+                    # (Systemtarif) — both apply to residential consumers.
+                    # v0.39.8 — 41000 added; was missing before, halving the
+                    # Energinet contribution. Excludes 40010 (Indfødningstarif
+                    # produktion), 40020 (HV 132/150 kV), capacity / industrial.
+                    energinet_sched = await fetch_tariff_schedule(
+                        session, ENERGINET_GLN, now,
+                        allowed_codes=ENERGINET_TARIFF_CODES,
+                    )
                 # Feed-in tariffs: DSO indfødning C + Energinet indfødning produktion (40010)
                 dso_feed_in, en_feed_in = await fetch_feed_in_tariff(
                     session, dso_gln, ENERGINET_GLN, now,
@@ -1389,7 +1415,7 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
                 # while Datahub was flaky. Now: keep the previous good
                 # cache and retry on the next coordinator tick.
                 dso_ok = any(dso_sched)
-                energinet_ok = any(energinet_sched)
+                energinet_ok = sl_sched is not None or any(energinet_sched)
                 if dso_ok and energinet_ok:
                     self._tariff_schedule = [
                         round(d + e, 4) for d, e in zip(dso_sched, energinet_sched)
@@ -8113,6 +8139,27 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
         """
         if self._setting(CONF_BUY_PRICE_MODE, DEFAULT_BUY_PRICE_MODE) != BUY_PRICE_MODE_STROMLIGNING:
             return
+        # Prefer the HA Strømligning integration when it is set up: it already
+        # knows the user's DSO and retailer product and keeps today/tomorrow
+        # current, so there is nothing to fetch. Reading it is cheap, so this
+        # runs every call rather than on the 24 h API cache window.
+        ha_prices = stromligning_ha_prices(self.hass, _CPH_TZ)
+        if ha_prices:
+            if not self._stromligning_from_ha:
+                _LOGGER.info(
+                    "Strømligning prices: using the Home Assistant Strømligning "
+                    "integration (%d slots)", len(ha_prices),
+                )
+            self._stromligning_from_ha = True
+            self._cached_stromligning_prices = ha_prices
+            self._last_stromligning_refresh = now
+            return
+        if self._stromligning_from_ha:
+            _LOGGER.warning(
+                "Home Assistant Strømligning integration has no price data — "
+                "keeping the last prices and trying the Strømligning API",
+            )
+            self._stromligning_from_ha = False
         product_id = self._setting(CONF_STROMLIGNING_PRODUCT_ID, "")
         supplier_id = self._setting(CONF_STROMLIGNING_SUPPLIER_ID, "")
         if not product_id or not supplier_id:
@@ -8482,8 +8529,18 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
                 return {}
 
         def try_forecast_solar() -> dict:
+            # Read the Forecast.Solar integration's own estimate, summed over
+            # every configured plane. Current HA no longer exposes a `watts`
+            # attribute, so the entity path below is only a legacy fallback.
+            data, used = forecast_solar_rates(self.hass, _CPH_TZ)
+            if data.get("rates"):
+                _LOGGER.debug(
+                    "forecast_solar: %d slots summed from %s",
+                    len(data["rates"]), ", ".join(used),
+                )
+                return data
             if not fs_entity:
-                _LOGGER.debug("forecast_solar entity not configured")
+                _LOGGER.debug("forecast_solar: no loaded entries and no entity configured")
                 return {}
             return self._fetch_solar_from_forecast_solar(fs_entity)
 
