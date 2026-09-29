@@ -83,6 +83,19 @@
     return Number.isFinite(n) ? n : (fallback === undefined ? 0 : fallback);
   }
 
+  // v1.21.0 — the status card shows power in kW and energy in kWh, but the
+  // entities it reads report in whatever unit their integration uses
+  // (solax_modbus: W; FoxESS Modbus: kW). Scale by unit_of_measurement so a
+  // 1197 W house load no longer renders as "1197.0 kW".
+  const _KILO_SCALE = { W: 0.001, kW: 1, MW: 1000, Wh: 0.001, kWh: 1, MWh: 1000 };
+
+  function numKilo(hass, entityId, fallback) {
+    const n = num(hass, entityId, fallback);
+    const unit = attr(hass, entityId, 'unit_of_measurement', null);
+    const scale = unit in _KILO_SCALE ? _KILO_SCALE[unit] : 1;
+    return n * scale;
+  }
+
   function attr(hass, entityId, key, fallback) {
     const st = hass && entityId ? hass.states[entityId] : undefined;
     if (!st || !st.attributes || !(key in st.attributes)) return fallback;
@@ -345,20 +358,20 @@
       const modeReason = state(hass, c.mode_reason_entity) || '';
       const enabled = state(hass, c.enabled_entity) === 'on';
 
-      const evPower = num(hass, c.ev_power_entity);
-      const houseLoadRaw = num(hass, c.house_load_entity);
+      const evPower = numKilo(hass, c.ev_power_entity);
+      const houseLoadRaw = numKilo(hass, c.house_load_entity);
       const houseLoad = Math.max(houseLoadRaw - evPower, 0);
 
-      const solar = num(hass, c.solar_entity);
-      const batC = num(hass, c.battery_charge_entity);
-      const batD = num(hass, c.battery_discharge_entity);
+      const solar = numKilo(hass, c.solar_entity);
+      const batC = numKilo(hass, c.battery_charge_entity);
+      const batD = numKilo(hass, c.battery_discharge_entity);
       const soc = num(hass, c.battery_soc_entity);
       const floor = num(hass, c.battery_floor_entity);
       // v1.19.0 — optional: cell temperature on the battery tile. Absent
       // config or an unavailable sensor simply leaves the line as it was.
       const batTemp = c.battery_temp_entity ? num(hass, c.battery_temp_entity) : null;
-      const gridImp = num(hass, c.grid_import_entity);
-      const gridExp = num(hass, c.grid_export_entity);
+      const gridImp = numKilo(hass, c.grid_import_entity);
+      const gridExp = numKilo(hass, c.grid_export_entity);
 
       const livePhases = attr(hass, c.ev_power_entity, 'live_phases', null);
       const targetPhases = attr(hass, c.ev_power_entity, 'target_phases', null);
@@ -387,7 +400,7 @@
 
       const todayRest = attr(hass, c.solar_forecast_entity, 'today_remaining_kwh', null);
       const tomorrow = attr(hass, c.solar_forecast_entity, 'tomorrow_kwh', null);
-      const actualToday = num(hass, c.solar_actual_today_entity);
+      const actualToday = numKilo(hass, c.solar_actual_today_entity);
 
       // v1.13.8 — the banner span carries a data-countdown-until attribute
       // with the deadline ISO string and a data-countdown-kind marking

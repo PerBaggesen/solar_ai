@@ -9,6 +9,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.21.1] — 2026-09-29
+
+### Fixed — the status card showed watts as kilowatts
+
+The status card labels power in kW and solar-today in kWh, but used each entity's number as-is. solax_modbus (Growatt) reports power in W, so a 1197 W house load rendered as "1197.0 kW", and subtracting the EV's kW from a W house load was off by the same factor. The card now scales each reading by the entity's `unit_of_measurement` (W, kW, MW, Wh, kWh, MWh); FoxESS installs, which report kW, are unchanged. The version bump also makes browsers fetch the new card bundle.
+
+---
+
 ## [1.21.0] — 2026-09-29
 
 ### Added — pluggable inverter backend, with solax_modbus / Growatt support
