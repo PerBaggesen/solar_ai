@@ -311,7 +311,7 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.info("Battery Arbitrage: migrated config entry to v15")
 
     if entry.version < 16:
-        # v15 → v16 (v1.20.0): pluggable inverter backend. Every entry created
+        # v15 → v16 (v1.21.0): pluggable inverter backend. Every entry created
         # before this version controls a FoxESS inverter — record that
         # explicitly so the backend choice never depends on a default.
         new_data.setdefault(CONF_INVERTER_BACKEND, INVERTER_BACKEND_FOXESS)
@@ -595,7 +595,7 @@ def _register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(DOMAIN, "set_schedule_days", handle_set_schedule_days)
 
     async def handle_inverter_self_test(call: ServiceCall) -> ServiceResponse:
-        """v1.20.0 — commissioning self-test: verify the inverter's control
+        """v1.21.0 — commissioning self-test: verify the inverter's control
         direction with a short, small charge command. Inverter control stays
         blocked on backends that require it until this has passed."""
         from homeassistant.components import persistent_notification  # noqa: PLC0415

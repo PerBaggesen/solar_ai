@@ -47,7 +47,7 @@ CONF_STROMLIGNING_ENTITY = "stromligning_entity"   # legacy key — migrated to 
 CONF_SPOT_PRICE_ENTITY = "spot_price_entity"        # generic spot-price source (any DKK/kWh sensor)
 
 # Inverter backend — which integration Solar AI reads and controls the battery
-# through. FoxESS was the only option before v1.20.0 (migration v15→v16 sets it
+# through. FoxESS was the only option before v1.21.0 (migration v15→v16 sets it
 # explicitly on existing entries).
 CONF_INVERTER_BACKEND = "inverter_backend"
 INVERTER_BACKEND_FOXESS = "foxess_modbus"

@@ -1006,7 +1006,7 @@ async def async_setup_entry(
     # Diagnostic: the running Solar AI integration version, shown in the
     # Settings pane. Reads coordinator.sw_version (set from manifest.json).
     entities.append(BatteryArbitrageVersionSensor(coordinator, entry))
-    # v1.20.0 — inverter backend diagnostics + last hardware command.
+    # v1.21.0 — inverter backend diagnostics + last hardware command.
     entities.append(BatteryArbitrageInverterControlSensor(coordinator, entry))
 
     async_add_entities(entities)
@@ -1054,7 +1054,7 @@ class BatteryArbitrageSensor(CoordinatorEntity[BatteryArbitrageCoordinator], Sen
 class BatteryArbitrageInverterControlSensor(
     CoordinatorEntity[BatteryArbitrageCoordinator], SensorEntity
 ):
-    """v1.20.0 — what Solar AI last commanded, and the backend's state.
+    """v1.21.0 — what Solar AI last commanded, and the backend's state.
 
     State: outcome of the last write (sent / dry_run / blocked / failed) or
     "idle". Attributes: the command itself, recent history, the backend's

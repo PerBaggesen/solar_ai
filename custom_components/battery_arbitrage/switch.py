@@ -602,7 +602,7 @@ class BatteryArbitrageDynamicFloorSwitch(
 class BatteryArbitrageDryRunSwitch(
     CoordinatorEntity[BatteryArbitrageCoordinator], SwitchEntity
 ):
-    """v1.20.0 — Dry run: compute and log every inverter command, send none.
+    """v1.21.0 — Dry run: compute and log every inverter command, send none.
 
     Used to commission a new inverter backend: Solar AI runs its full decision
     logic and records what it *would* write (see the Inverter control

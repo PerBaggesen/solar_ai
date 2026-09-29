@@ -204,8 +204,8 @@
         "title": "Solar AI — enhedstilknytning",
         "description": "Trin 3 af 3 — tilknyt Solar AI til din invertér og dine batterisensorer. Ret disse hvis dine entity-ID'er afviger fra FoxESS Modbus-standarderne.",
         "data": {
-        "inverter_rated_kw": "Inverterens nominelle AC-effekt (kW)",
-        "vpp_watchdog_min": "Hardware-watchdog (minutter)",
+          "inverter_rated_kw": "Inverterens nominelle AC-effekt (kW)",
+          "vpp_watchdog_min": "Hardware-watchdog (minutter)",
           "foxess_inverter_id": "Invertér-ID",
           "foxess_work_mode_entity": "Arbejdstilstand (select-enhed)",
           "foxess_force_charge_entity": "Tvungen opladningseffekt",

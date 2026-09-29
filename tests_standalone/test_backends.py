@@ -29,7 +29,7 @@ def run(coro):
 
 
 class FoxessParityTest(unittest.TestCase):
-    """The FoxESS backend must issue exactly the calls the pre-v1.20 helpers did."""
+    """The FoxESS backend must issue exactly the calls the pre-v1.21 helpers did."""
 
     def setUp(self):
         self.hass = FakeHass()

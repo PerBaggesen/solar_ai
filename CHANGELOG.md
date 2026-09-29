@@ -9,6 +9,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.21.0] — 2026-09-29
+
+### Added — pluggable inverter backend, with solax_modbus / Growatt support
+
+Inverter control now goes through an `InverterBackend` interface instead of FoxESS-specific coordinator helpers.
+
+- **FoxESS** — the previous helpers moved unchanged (work mode, force charge/discharge kW, registers 46616/49251).
+- **solax_modbus** — entities are resolved by unique id and plans are executed through per-plugin profiles. The Growatt VPP profile drives remote control (`vpp_power` %, `vpp_time` watchdog with keep-alive, export limit %, EMS minimum SoC and the discharge-rate lock).
+- **Actuator** — every hardware write is gated (dry run / blocked) and context-tagged; drifting values are re-asserted (rate limited) and raise a Repairs issue when they do not stick.
+- **Commissioning** — the new `battery_arbitrage.inverter_self_test` action verifies the control direction. solax_modbus control stays blocked until it passes, and power is capped at 50 % for the first three confirmed cycles. New solax_modbus setups start in dry run.
+- The config flow detects FoxESS and solax_modbus hubs; config entry migration v15 → v16 marks existing entries as FoxESS.
+- A *Dry run* switch, an *Inverter control* diagnostic sensor, and Repairs issues for EVCC presence, competing TOU slots, write mismatches and unverified control.
+- Power and energy reads are unit-normalised (W/Wh → kW/kWh); PV power can be computed from voltage × current.
+- Forecast and price data can be read from other Home Assistant integrations (Forecast.Solar, Strømligning).
+
+### Fixed — dashboard entity ids rewritten inside longer ids
+
+The 1.20.0 resolver rewrote ids inside templates with plain substring replacement. The bundled YAML has ids that are prefixes of others (`..._solcelle_prognose_24h` / `..._24h_justeret`), so rewriting the shorter one could corrupt the longer one, and one replacement could be rewritten again by the next. Substitution is now a single regex pass that only matches whole entity ids, including the `states.sensor.x` form.
+
+### Changed
+
+- The standalone unit tests (no Home Assistant needed) live in `tests_standalone/`, outside the integration folder that HACS installs. Run them with `python3 -m unittest discover -s tests_standalone -t tests_standalone`.
+
+---
+
 ## [1.20.0] — 2026-09-25
 
 ### Fixed — the bundled dashboard only worked on an install whose entity ids matched the author's

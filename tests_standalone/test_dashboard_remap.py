@@ -25,6 +25,25 @@ class RemapTest(unittest.TestCase):
         self.assertIn("sensor.growatt_battery_charge_power", out["cards"][2]["content"])
         self.assertEqual(out["cards"][3]["entities"], ["sensor.growatt_export", 5, None])
 
+    def test_prefix_id_not_rewritten_inside_longer_id(self):
+        # The bundled YAML has both ..._24h and ..._24h_justeret; a template
+        # holding the longer one must survive a rewrite of the shorter one.
+        cfg = {"content": "{{ states('sensor.x_prognose_24h_justeret') }}"
+                          " / {{ states('sensor.x_prognose_24h') }}"}
+        out = remap_entities(cfg, {"sensor.x_prognose_24h": "sensor.y_24h"})
+        self.assertEqual(
+            out["content"],
+            "{{ states('sensor.x_prognose_24h_justeret') }} / {{ states('sensor.y_24h') }}")
+
+    def test_states_attribute_form(self):
+        cfg = {"content": "{{ states.sensor.old_info.attributes.x }}"}
+        out = remap_entities(cfg, {"sensor.old_info": "sensor.new_info"})
+        self.assertEqual(out["content"], "{{ states.sensor.new_info.attributes.x }}")
+
+    def test_no_chained_rewrites(self):
+        out = remap_entities("sensor.a sensor.b", {"sensor.a": "sensor.b", "sensor.b": "sensor.c"})
+        self.assertEqual(out, "sensor.b sensor.c")
+
     def test_empty_mapping_is_identity(self):
         cfg = {"a": "sensor.foxessmodbus_feed_in"}
         self.assertEqual(remap_entities(cfg, {}), cfg)

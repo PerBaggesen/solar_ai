@@ -74,27 +74,18 @@ _FOREIGN_ENTITY_KEYS: dict[str, str] = {
     "select.foxessmodbus_work_mode": CONF_FOXESS_WORK_MODE_ENTITY,
 }
 
-# v1.20.0 — the bundled dashboards reference the FoxESS Modbus default entity
-# ids. On creation they are remapped to the entities configured in Solar AI,
-# so a non-FoxESS install (e.g. solax_modbus) gets working cards.
-_ENTITY_REMAP: dict[str, str] = {
-    "sensor.foxessmodbus_battery_soc_1": CONF_BATTERY_SOC_ENTITY,
-    "sensor.foxessmodbus_battery_charge": CONF_BATTERY_CHARGE_ENTITY,
-    "sensor.foxessmodbus_battery_discharge": CONF_BATTERY_DISCHARGE_ENTITY,
-    "sensor.foxessmodbus_grid_consumption": CONF_FOXESS_GRID_IMPORT_ENTITY,
-    "sensor.foxessmodbus_feed_in": CONF_FOXESS_GRID_EXPORT_ENTITY,
-    "sensor.foxessmodbus_load_power": CONF_FOXESS_LOAD_POWER_ENTITY,
-    "sensor.pv_power_foxessmodbus": CONF_FOXESS_PV_POWER_ENTITY,
-    "select.foxessmodbus_work_mode": CONF_FOXESS_WORK_MODE_ENTITY,
-}
-
-
 def remap_entities(node: Any, mapping: dict[str, str]) -> Any:
-    """Replace whole entity ids in every string of a dashboard config."""
+    """Replace whole entity ids in every string of a dashboard config.
+
+    One regex pass, longest id first, anchored on both sides: an id that is a
+    prefix of another (`..._prognose_24h` / `..._prognose_24h_justeret`) is
+    never rewritten inside the longer one, and a replacement is never itself
+    rewritten again.
+    """
     if not mapping:
         return node
     pattern = re.compile(
-        r"(?<![a-z0-9_.])(?:"
+        r"(?<![a-z0-9_])(?:"
         + "|".join(re.escape(k) for k in sorted(mapping, key=len, reverse=True))
         + r")(?![a-z0-9_])")
 
@@ -109,16 +100,6 @@ def remap_entities(node: Any, mapping: dict[str, str]) -> Any:
 
     return _walk(node)
 
-
-def _configured_remap(hass: HomeAssistant) -> dict[str, str]:
-    entries = hass.config_entries.async_entries(DOMAIN)
-    if not entries:
-        return {}
-    data = entries[0].data
-    return {
-        default: data[key] for default, key in _ENTITY_REMAP.items()
-        if data.get(key) and data[key] != default
-    }
 
 # v0.74.0 — the bundled dashboard now ships its own cards (registered
 # automatically by frontend.py, no HACS install needed), so this list is
@@ -190,24 +171,6 @@ def _build_substitutions(
     return subs, unresolved
 
 
-def _apply_substitutions(node: Any, subs: dict[str, str]) -> Any:
-    """Rewrite every entity id in a loaded dashboard, in place where possible."""
-    if isinstance(node, dict):
-        return {k: _apply_substitutions(v, subs) for k, v in node.items()}
-    if isinstance(node, list):
-        return [_apply_substitutions(v, subs) for v in node]
-    if isinstance(node, str):
-        if node in subs:
-            return subs[node]
-        # Templates and markdown embed ids inside longer strings.
-        out = node
-        for old, new in subs.items():
-            if old in out:
-                out = out.replace(old, new)
-        return out
-    return node
-
-
 def _referenced_entities(node: Any, found: set[str] | None = None) -> set[str]:
     """Every entity id a dashboard config refers to, for the existence check."""
     found = set() if found is None else found
@@ -264,14 +227,13 @@ async def async_create_dashboard(hass: HomeAssistant, *, force: bool = False) ->
         config = await hass.async_add_executor_job(_load_dashboard_yaml, hass.config.language)
         if not config:
             return None
-        config = remap_entities(config, _configured_remap(hass))
 
         # v1.20.0 — rewrite the bundled ids to this install's before writing.
         entity_map = await hass.async_add_executor_job(_load_entity_map)
         if entity_map:
             subs, unresolved = _build_substitutions(hass, entity_map)
             if subs:
-                config = _apply_substitutions(config, subs)
+                config = remap_entities(config, subs)
                 _LOGGER.info(
                     "Solar AI dashboard: resolved %d entity id(s) to this install",
                     len(subs),

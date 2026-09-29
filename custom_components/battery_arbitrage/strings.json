@@ -218,8 +218,8 @@
         "title": "Solar AI — Entity Mapping",
         "description": "Step 3 of 3 — map Solar AI to your inverter and battery sensors. Change these if your entity IDs differ from the FoxESS Modbus defaults.",
         "data": {
-        "inverter_rated_kw": "Inverter rated AC power (kW)",
-        "vpp_watchdog_min": "Hardware watchdog (minutes)",
+          "inverter_rated_kw": "Inverter rated AC power (kW)",
+          "vpp_watchdog_min": "Hardware watchdog (minutes)",
           "foxess_inverter_id": "Inverter ID",
           "foxess_work_mode_entity": "Work mode entity",
           "foxess_force_charge_entity": "Force charge power entity",
@@ -624,6 +624,10 @@
     "missing_dashboard_cards": {
       "title": "Solar AI dashboard cards not installed",
       "description": "The Solar AI dashboard uses custom Lovelace cards that aren't installed yet: {cards}. Install them from HACS → Frontend, then reload your browser (the documentation link below has each card)."
+    },
+    "missing_dashboard_entities": {
+      "title": "Solar AI dashboard: {count} entities not found",
+      "description": "The Solar AI dashboard refers to {count} entities that do not exist here: {entities}\n\nThe bundled dashboard is rewritten to your entity ids when it is created, matching each entity on its translation key. What is left over is usually a feature you have not configured (no EV charger, no price provider), or a third-party entity such as the FoxESS inverter under a different device name. Set the matching entity in Solar AI's options and run the `battery_arbitrage.create_dashboard` action with `force: true`, or edit those cards by hand."
     }
   }
 }

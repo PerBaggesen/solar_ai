@@ -5,8 +5,10 @@ Registers `battery_arbitrage` as a bare namespace (so its HA-heavy
 helper modules the inverter backends use (entity_registry, issue_registry).
 Also provides FakeHass: states, service-call recording, config entries.
 
-Run from the integration's parent directory:
-    python3 -m unittest discover -s battery_arbitrage/tests -t battery_arbitrage/tests
+Kept apart from tests/ (which runs under pytest-homeassistant-custom-component)
+because these fakes stand in for the real homeassistant package. Run from the
+repository root:
+    python3 -m unittest discover -s tests_standalone -t tests_standalone
 """
 from __future__ import annotations
 
@@ -16,7 +18,7 @@ import types
 from dataclasses import dataclass, field
 from typing import Any
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
+ROOT = pathlib.Path(__file__).resolve().parents[1] / "custom_components" / "battery_arbitrage"
 PKG = "battery_arbitrage"
 
 

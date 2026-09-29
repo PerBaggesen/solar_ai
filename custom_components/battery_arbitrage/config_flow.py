@@ -207,7 +207,7 @@ class BatteryArbitrageConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Step 1: detect which inverter integrations Solar AI can control.
 
-        v1.20.0 — FoxESS Modbus or a supported solax_modbus hub. Without
+        v1.21.0 — FoxESS Modbus or a supported solax_modbus hub. Without
         either, discovery finds nothing and the wizard would show blank entity
         pickers — abort with guidance instead.
         """
@@ -1264,7 +1264,7 @@ class BatteryArbitrageOptionsFlow(OptionsFlow):
         data = self._entry.data
 
         if data.get(CONF_INVERTER_BACKEND) == INVERTER_BACKEND_SOLAX:
-            # v1.20.0 — solax_modbus control entities are resolved from the
+            # v1.21.0 — solax_modbus control entities are resolved from the
             # hub; only its rated power and watchdog are editable here.
             inverter_fields = {
                 vol.Required(CONF_INVERTER_RATED_KW,

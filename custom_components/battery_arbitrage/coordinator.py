@@ -317,7 +317,7 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
         self._store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         self._stored: dict[str, Any] = {}
 
-        # v1.20.0 — every hardware write goes through the Actuator (dry run,
+        # v1.21.0 — every hardware write goes through the Actuator (dry run,
         # blocked writes, own-context tracking); the inverter backend turns the
         # operating modes into writes for FoxESS or solax_modbus.
         async def _call_service(domain: str, service: str, data: dict, context) -> Any:
@@ -1210,7 +1210,7 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
         now = datetime.now(timezone.utc)
         forecast_hours = self.config.get("forecast_hours", 24)
 
-        # v1.20.0 — one-off inverter backend checks (repair issues). Run on the
+        # v1.21.0 — one-off inverter backend checks (repair issues). Run on the
         # first tick rather than at construction so the inverter integration's
         # entities are loaded.
         if not self._inverter_setup_done:
@@ -1782,7 +1782,7 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
         cell_temp_low = self._get_float_state(self.config.get(CONF_CELL_TEMP_ENTITY, FOXESS_CELL_TEMP_LOW))
         battery_charge_kw = self._get_power_kw(self.config.get(CONF_BATTERY_CHARGE_ENTITY, FOXESS_BATTERY_CHARGE_POWER), 0)
         battery_discharge_kw = self._get_power_kw(self.config.get(CONF_BATTERY_DISCHARGE_ENTITY, FOXESS_BATTERY_DISCHARGE_POWER), 0)
-        # v1.20.0 — the charge-rate learner only needs to know whether the
+        # v1.21.0 — the charge-rate learner only needs to know whether the
         # inverter is force-charging; ask the backend instead of reading the
         # FoxESS work-mode select directly.
         work_mode_str = (WORK_MODE_FORCE_CHARGE if self.inverter.is_force_charging()
@@ -2828,7 +2828,7 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
         flag = await self.inverter.async_read_pv_limited()
         if flag is not None:
             self._pv_power_limited_flag = flag
-        # v1.20.0 — backend upkeep: keep timed remote-control modes alive,
+        # v1.21.0 — backend upkeep: keep timed remote-control modes alive,
         # verify our writes stuck, refresh repair issues.
         try:
             await self.inverter.async_tick(datetime.now(timezone.utc))
@@ -6876,7 +6876,7 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
         if locked == self._ev_battery_locked:
             return
 
-        # v1.20.0 — the lock entity comes from the inverter backend (FoxESS:
+        # v1.21.0 — the lock entity comes from the inverter backend (FoxESS:
         # max discharge current in A; Growatt: EMS discharging rate in %).
         max_discharge_entity = self.inverter.discharge_lock_entity() or ""
 
@@ -9482,7 +9482,7 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
 
     def _get_power_kw(self, entity_id: str, default: float | None = None) -> float | None:
         """Power reading in kW, converted from the entity's unit (W/kW/MW).
-        v1.20.0 — solax_modbus reports W; FoxESS reports kW (unchanged)."""
+        v1.21.0 — solax_modbus reports W; FoxESS reports kW (unchanged)."""
         state = self.hass.states.get(entity_id)
         if state is None or state.state in ("unknown", "unavailable"):
             return default
@@ -9528,7 +9528,7 @@ class BatteryArbitrageCoordinator(DataUpdateCoordinator):
         return {"mode": mode, "reason": reason, **kwargs}
 
     async def async_inverter_self_test(self) -> dict[str, Any]:
-        """v1.20.0 — run the inverter backend's commissioning self-test.
+        """v1.21.0 — run the inverter backend's commissioning self-test.
 
         Refused while Solar AI is actively forcing a mode, so the test never
         fights a real grid-charge or export session.
