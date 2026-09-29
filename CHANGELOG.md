@@ -28,6 +28,10 @@ Inverter control now goes through an `InverterBackend` interface instead of FoxE
 
 The 1.20.0 resolver rewrote ids inside templates with plain substring replacement. The bundled YAML has ids that are prefixes of others (`..._solcelle_prognose_24h` / `..._24h_justeret`), so rewriting the shorter one could corrupt the longer one, and one replacement could be rewritten again by the next. Substitution is now a single regex pass that only matches whole entity ids, including the `states.sensor.x` form.
 
+### Fixed — the dashboard's navigation buttons all opened the Overview
+
+The bundled YAML links between views as `/battery-arbitrage/<view>`, the url `deploy.py` installs it under, but `create_dashboard` installs it at `/solar-ai`. Every nav button and the prices tile pointed at a dashboard that does not exist, and Home Assistant fell back to the default one. The links are now rewritten to the dashboard's real url when it is created; run `battery_arbitrage.create_dashboard` with `force: true` to pick this up.
+
 ### Changed
 
 - The standalone unit tests (no Home Assistant needed) live in `tests_standalone/`, outside the integration folder that HACS installs. Run them with `python3 -m unittest discover -s tests_standalone -t tests_standalone`.

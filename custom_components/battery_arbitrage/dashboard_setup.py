@@ -101,6 +101,30 @@ def remap_entities(node: Any, mapping: dict[str, str]) -> Any:
     return _walk(node)
 
 
+# v1.21.0 — the bundled YAML links between views as /battery-arbitrage/<view>,
+# the url deploy.py installs it under. create_dashboard installs it under
+# DASHBOARD_URL_PATH, where those links land on a missing dashboard and Home
+# Assistant falls back to the default one.
+_BUNDLED_URL_PATH = "battery-arbitrage"
+
+
+def rebase_view_links(node: Any, url_path: str) -> Any:
+    """Point /battery-arbitrage/<view> links at the dashboard's real url."""
+    if url_path == _BUNDLED_URL_PATH:
+        return node
+    pattern = re.compile(r"(?<![\w/-])/" + re.escape(_BUNDLED_URL_PATH) + r"(?=/|$)")
+
+    def _walk(value: Any) -> Any:
+        if isinstance(value, str):
+            return pattern.sub("/" + url_path, value)
+        if isinstance(value, list):
+            return [_walk(v) for v in value]
+        if isinstance(value, dict):
+            return {k: _walk(v) for k, v in value.items()}
+        return value
+
+    return _walk(node)
+
 # v0.74.0 — the bundled dashboard now ships its own cards (registered
 # automatically by frontend.py, no HACS install needed), so this list is
 # empty. Kept as a list (not deleted) since async_check_dashboard_cards below
@@ -227,6 +251,7 @@ async def async_create_dashboard(hass: HomeAssistant, *, force: bool = False) ->
         config = await hass.async_add_executor_job(_load_dashboard_yaml, hass.config.language)
         if not config:
             return None
+        config = rebase_view_links(config, DASHBOARD_URL_PATH)
 
         # v1.20.0 — rewrite the bundled ids to this install's before writing.
         entity_map = await hass.async_add_executor_job(_load_entity_map)
