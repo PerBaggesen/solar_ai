@@ -358,6 +358,9 @@
       const modeReason = state(hass, c.mode_reason_entity) || '';
       const enabled = state(hass, c.enabled_entity) === 'on';
 
+      // v1.21.3 — decimals on the kW tiles (card option power_decimals).
+      // One decimal hid most of a W-resolution sensor's reading.
+      const pd = Number.isInteger(c.power_decimals) ? c.power_decimals : 3;
       const evPower = numKilo(hass, c.ev_power_entity);
       const houseLoadRaw = numKilo(hass, c.house_load_entity);
       const houseLoad = Math.max(houseLoadRaw - evPower, 0);
@@ -462,19 +465,19 @@
 
           <div style="text-align:center;margin-bottom:12px;">
             <div class="tile-label" style="font-size:16px;">${t(hass, 'house_load')}</div>
-            <div style="font-size:32px;font-weight:500;">${fmt(houseLoad, 1)} kW</div>
+            <div style="font-size:32px;font-weight:500;">${fmt(houseLoad, pd)} kW</div>
           </div>
 
           <div class="grid4" style="margin-bottom:12px;">
             <div class="tile" data-action="more-info" data-entity="${c.solar_entity || ''}">
               <ha-icon icon="mdi:weather-sunny" style="color:var(--warning-color);"></ha-icon>
               <div class="tile-label" style="font-size:14px;margin-top:4px;">${t(hass, 'solar')}</div>
-              <div style="font-size:19px;font-weight:500;">${fmt(solar, 1)} kW</div>
+              <div style="font-size:19px;font-weight:500;">${fmt(solar, pd)} kW</div>
             </div>
             <div class="tile" data-action="more-info" data-entity="${c.battery_soc_entity || ''}">
               <ha-icon icon="mdi:battery-high" style="color:var(--primary-color);"></ha-icon>
               <div class="tile-label" style="font-size:14px;margin-top:4px;">${t(hass, 'battery')}</div>
-              <div style="font-size:19px;font-weight:500;color:${batColor};">${fmt(batVal, 1)} kW</div>
+              <div style="font-size:19px;font-weight:500;color:${batColor};">${fmt(batVal, pd)} kW</div>
               <div style="font-size:13px;margin-top:1px;color:${batColor};">${batLabel}</div>
               <div style="position:relative;height:5px;background:var(--divider-color);border-radius:3px;margin-top:6px;">
                 <div style="position:absolute;left:0;top:0;height:100%;width:${Math.min(100, Math.max(0, soc))}%;background:var(--primary-color);border-radius:3px;"></div>
@@ -486,14 +489,14 @@
             <div class="tile" data-action="more-info" data-entity="${c.grid_import_entity || ''}">
               <ha-icon icon="mdi:transmission-tower" style="color:var(--info-color, #039be5);"></ha-icon>
               <div class="tile-label" style="font-size:14px;margin-top:4px;">${t(hass, 'grid')}</div>
-              <div style="font-size:19px;font-weight:500;color:${gridColor};">${fmt(gridVal, 1)} kW</div>
+              <div style="font-size:19px;font-weight:500;color:${gridColor};">${fmt(gridVal, pd)} kW</div>
               <div style="font-size:13px;margin-top:3px;color:${gridColor};">${gridLabel}</div>
             </div>
             <div class="tile" data-action="more-info" data-entity="${(c.ev_connected_entity || c.ev_power_entity) || ''}">
               <ha-icon icon="${evConnected ? 'mdi:car-electric' : 'mdi:power-plug-off'}" style="color:${evConnected ? 'var(--success-color, #43a047)' : 'var(--secondary-text-color, #8a8a8a)'};"></ha-icon>
               <div class="tile-label" style="font-size:14px;margin-top:4px;">${t(hass, 'ev')}</div>
               ${evConnected
-                ? `<div style="font-size:19px;font-weight:500;">${fmt(evPower, 1)} kW</div>
+                ? `<div style="font-size:19px;font-weight:500;">${fmt(evPower, pd)} kW</div>
               <div style="font-size:13px;margin-top:3px;color:var(--success-color, #43a047);">${phase ? `${phase}&phi; &middot; ` : ''}${t(hass, 'ev_connected_label')}</div>`
                 : `<div style="font-size:16px;font-weight:500;color:var(--secondary-text-color, #8a8a8a);margin-top:6px;">${t(hass, 'ev_disconnected_label')}</div>`}
             </div>

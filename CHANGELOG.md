@@ -9,6 +9,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.21.3] — 2026-09-29
+
+### Changed — the status card's kW tiles show three decimals
+
+House load, solar, battery, grid and EV power now show three decimals (1.197 kW instead of 1.2 kW), so a W-resolution sensor's reading is not rounded away. Set `power_decimals` on the card to change it; the kWh rows keep one decimal.
+
+---
+
 ## [1.21.2] — 2026-09-29
 
 ### Fixed — the last dashboard entities that did not resolve on a solax_modbus install
